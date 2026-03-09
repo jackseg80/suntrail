@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
 import { loadTerrain, updateVisibleTiles } from './terrain.js';
-import { throttle } from '../../src/modules/utils.js'; // Réutilise le throttle du projet principal
+import { throttle } from './utils.js';
 
 export async function initScene() {
     const container = document.getElementById('canvas-container');
