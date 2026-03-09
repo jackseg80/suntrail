@@ -214,7 +214,7 @@ function smoothElevGrid(grid, gs, passes) {
 export async function recompute() {
     if (!state.cachedGrid || state.shadowPending || !state.map) return;
     state.shadowPending = true;
-    clearDebugLayer();
+    
     const st = document.getElementById('sst'); st.className = 'ss cp';
     const c = state.map.getCenter();
     const sp = SunCalc.getPosition(state.curDate, c.lat, c.lng);
@@ -243,7 +243,7 @@ export async function recompute() {
     const rawDy = -Math.cos(sunAz * Math.PI / 180) / midMpcY;
     const maxComp = Math.max(Math.abs(rawDx), Math.abs(rawDy));
     const stepDist = Math.sqrt(((rawDx / maxComp) * midMpcX) ** 2 + ((rawDy / maxComp) * midMpcY) ** 2);
-    const maxSteps = Math.min(Math.ceil(50000 / stepDist), gs * 2);
+    const maxSteps = Math.min(Math.ceil(70000 / stepDist), gs * 2); // 70km max shadow length
 
     const t0 = performance.now();
     let intensity;
@@ -287,14 +287,15 @@ export async function loadAndCompute() {
         try {
             const b = state.map.getBounds();
             const vWest = b.getWest(), vEast = b.getEast(), vNorth = b.getNorth(), vSouth = b.getSouth();
-            const mg = 0.20;
+            const mg = 0.35; // Énorme marge de 35-40km pour attraper les montagnes éloignées
             const west = vWest - mg, east = vEast + mg, north = vNorth + mg, south = vSouth - mg;
             let zoom = 12;
             const spanKm = ((east - west) * 111320 * Math.cos(c.lat * Math.PI / 180)) / 1000;
-            if (spanKm > 40) zoom = 11;
+            if (spanKm > 80) zoom = 10;
+            else if (spanKm > 40) zoom = 11;
             
             let tiles = getTiles(west, south, east, north, zoom);
-            if (tiles.length > 300 && zoom > 11) { zoom = 11; tiles = getTiles(west, south, east, north, zoom); }
+            if (tiles.length > 250 && zoom > 10) { zoom--; tiles = getTiles(west, south, east, north, zoom); }
             if (tiles.length > 500) throw new Error(`Trop de tuiles (${tiles.length})`);
             
             st.textContent = `⏳ ${tiles.length} tuiles (z${zoom})...`;
@@ -322,6 +323,7 @@ export async function loadAndCompute() {
 }
 
 function getTiles(w, s, e, n, z) {
+//... (je garde cette partie intacte)
     const lng2t = (l, z) => Math.floor((l + 180) / 360 * (1 << z));
     const lat2t = (l, z) => Math.floor((1 - Math.log(Math.tan(l * Math.PI / 180) + 1 / Math.cos(l * Math.PI / 180)) / Math.PI) / 2 * (1 << z));
     const mx = lng2t(w, z), Mx = lng2t(e, z), my = lat2t(n, z), My = lat2t(s, z), t = [];
@@ -387,8 +389,9 @@ async function fetchElevCanvas(tiles, zoom, west, south, east, north, gs) {
     return grid;
 }
 
+let shadowLayerCount = 0;
+
 function renderShadow(intensity, gs, west, south, east, north) {
-    clearShadowLayer();
     const vp = state.cachedViewport || { west, south, east, north };
     const gridW = east - west;
     
@@ -434,10 +437,26 @@ function renderShadow(intensity, gs, west, south, east, north) {
     const actualVpNorth = mercY2lat(yN - (vpy0 / gs) * (yN - yS));
     const actualVpSouth = mercY2lat(yN - (vpy1 / gs) * (yN - yS));
     
-    state.map.addSource('sh-src', { type: 'image', url: cv2.toDataURL(), coordinates: [[actualVpWest, actualVpNorth], [actualVpEast, actualVpNorth], [actualVpEast, actualVpSouth], [actualVpWest, actualVpSouth]] });
+    const newId = `sh-ov-${shadowLayerCount++}`;
+    const newSrcId = `sh-src-${newId}`;
+    
+    state.map.addSource(newSrcId, { type: 'image', url: cv2.toDataURL(), coordinates: [[actualVpWest, actualVpNorth], [actualVpEast, actualVpNorth], [actualVpEast, actualVpSouth], [actualVpWest, actualVpSouth]] });
     const op = parseFloat(document.getElementById('sop').value);
     const before = state.map.getLayer('sun-path') ? 'sun-path' : undefined;
-    state.map.addLayer({ id: 'sh-ov', type: 'raster', source: 'sh-src', paint: { 'raster-opacity': op, 'raster-fade-duration': 0 } }, before);
+    
+    // On ajoute la nouvelle ombre
+    state.map.addLayer({ id: newId, type: 'raster', source: newSrcId, paint: { 'raster-opacity': op, 'raster-fade-duration': 300 } }, before);
+    
+    // On supprime les anciennes ombres de manière propre après un petit délai pour la transition
+    setTimeout(() => {
+        const layers = state.map.getStyle().layers;
+        layers.forEach(layer => {
+            if (layer.id.startsWith('sh-ov-') && layer.id !== newId) {
+                state.map.removeLayer(layer.id);
+                state.map.removeSource(`sh-src-${layer.id}`);
+            }
+        });
+    }, 350);
 }
 
 export function clearShadows() {
