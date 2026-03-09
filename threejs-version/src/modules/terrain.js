@@ -7,6 +7,15 @@ function lngLatToTile(lon, lat, zoom) {
     return { x, y, z: zoom };
 }
 
+function tileToLng(x, z) {
+    return (x / Math.pow(2, z) * 360 - 180);
+}
+
+function tileToLat(y, z) {
+    const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+    return (180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
+}
+
 export async function loadTerrain() {
     const btn = document.getElementById('bgo');
     btn.textContent = "Téléchargement et décodage HD...";
@@ -17,6 +26,15 @@ export async function loadTerrain() {
     
     const tileSize = 256;
     const canvasSize = tileSize * gridSize;
+    
+    // Calcul des dimensions physiques exactes du carré téléchargé (Échelle 1:1)
+    const westLng = tileToLng(centerTile.x - offset, state.ZOOM);
+    const eastLng = tileToLng(centerTile.x + offset + 1, state.ZOOM);
+    const northLat = tileToLat(centerTile.y - offset, state.ZOOM);
+    const southLat = tileToLat(centerTile.y + offset + 1, state.ZOOM);
+    
+    const widthMeters = (eastLng - westLng) * 111320 * Math.cos(state.TARGET_LAT * Math.PI / 180);
+    const heightMeters = (northLat - southLat) * 111320;
     
     const colorCanvas = document.createElement('canvas');
     colorCanvas.width = canvasSize; colorCanvas.height = canvasSize;
@@ -66,18 +84,16 @@ export async function loadTerrain() {
     colorTex.colorSpace = THREE.SRGBColorSpace;
     if(state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
-    const planeSize = 20000; 
     const segments = 1024; 
-    const geometry = new THREE.PlaneGeometry(planeSize, planeSize, segments, segments);
+    // Utilisation des dimensions physiques réelles (ex: 41000 x 58000 mètres)
+    const geometry = new THREE.PlaneGeometry(widthMeters, heightMeters, segments, segments);
     geometry.rotateX(-Math.PI / 2);
 
     const positions = geometry.attributes.position.array;
     
-    // Fonction d'interpolation bilinéaire pour lisser les jointures de tuiles et les pentes
     function getElevationBilinear(u, v) {
         let x = u * (canvasSize - 1);
         let y = v * (canvasSize - 1);
-        // Évite de sortir du tableau
         if (x < 0) x = 0; if (x >= canvasSize - 1) x = canvasSize - 1.001;
         if (y < 0) y = 0; if (y >= canvasSize - 1) y = canvasSize - 1.001;
 
@@ -94,10 +110,8 @@ export async function loadTerrain() {
         const h01 = heights[y1 * canvasSize + x0];
         const h11 = heights[y1 * canvasSize + x1];
 
-        // Gérer les pixels manquants (océan/nodata)
         if (h00 < -9000 || h10 < -9000 || h01 < -9000 || h11 < -9000) return h00;
 
-        // Interpolation
         return h00 * (1 - wx) * (1 - wy) +
                h10 * wx * (1 - wy) +
                h01 * (1 - wx) * wy +
@@ -105,9 +119,10 @@ export async function loadTerrain() {
     }
 
     for (let i = 0; i < positions.length; i += 3) {
-        const u = (positions[i] / planeSize) + 0.5;
-        // Correction de l'inversion Nord/Sud : l'axe Z pointe vers le Sud dans Three.js
-        const v = (positions[i+2] / planeSize) + 0.5; 
+        // En PlaneGeometry, l'origine (0,0) est au centre. 
+        // On récupère les UV (0 à 1) depuis les coordonnées X et Z actuelles.
+        const u = (positions[i] / widthMeters) + 0.5;
+        const v = (positions[i+2] / heightMeters) + 0.5; 
         
         const h = getElevationBilinear(u, v);
         positions[i+1] = h > -9000 ? h : minH; 
