@@ -9,13 +9,9 @@ export function updateSunPosition(minutes) {
     
     document.getElementById('time-disp').textContent = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
     
-    const now = new Date();
-    // Calcul de l'heure solaire locale exacte basée sur la longitude de la montagne regardée (1h = 15 degrés)
-    const offsetHours = state.TARGET_LON / 15;
-    const utcTimestamp = (hours - offsetHours) * 3600000 + (mins * 60000);
-    
-    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-    date.setTime(date.getTime() + utcTimestamp);
+    // Utilisation de l'heure légale locale (comme Shadowmap)
+    const date = new Date();
+    date.setHours(hours, mins, 0, 0);
     
     const pos = SunCalc.getPosition(date, state.TARGET_LAT, state.TARGET_LON);
     const az = pos.azimuth; // 0 = Sud, Positif = Ouest, Négatif = Est
