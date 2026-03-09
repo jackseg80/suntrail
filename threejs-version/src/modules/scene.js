@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MapControls } from 'three/addons/controls/OrbitControls.js';
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
 import { loadTerrain, updateVisibleTiles } from './terrain.js';
@@ -21,14 +21,18 @@ export async function initScene() {
     state.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(state.renderer.domElement);
 
-    // 3. Caméra et Contrôles
+    // 3. Caméra et Contrôles "Type Carte" (MapControls)
     state.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 100000);
-    state.camera.position.set(0, 3000, 8000);
+    state.camera.position.set(0, 5000, 5000); // Départ un peu plus haut
 
-    state.controls = new OrbitControls(state.camera, state.renderer.domElement);
+    // MapControls inverse les boutons : Clic gauche = Déplacement (Pan), Clic droit = Rotation
+    state.controls = new MapControls(state.camera, state.renderer.domElement);
     state.controls.enableDamping = true;
     state.controls.dampingFactor = 0.05;
     state.controls.maxPolarAngle = Math.PI / 2 - 0.05;
+    state.controls.screenSpacePanning = false; // Mouvement de pan parallèle au sol (essentiel pour les cartes)
+    state.controls.minDistance = 500; // Bloque le zoom avant pour ne pas traverser le sol
+    state.controls.maxDistance = 40000; // Limite le dézoom
 
     // Constantes pour la conversion Mètres <-> Degrés
     state.initialLat = state.TARGET_LAT;
@@ -45,8 +49,8 @@ export async function initScene() {
         state.TARGET_LON = state.initialLon + dLon;
         state.TARGET_LAT = state.initialLat + dLat;
 
-        // Passe la hauteur de la caméra pour adapter le rayon de chargement
-        updateVisibleTiles(state.TARGET_LAT, state.TARGET_LON, state.camera.position.y);
+        // Passe la distance de la caméra au sol pour adapter le rayon de chargement
+        updateVisibleTiles(state.TARGET_LAT, state.TARGET_LON, state.controls.getDistance());
     }, 500);
     
     state.controls.addEventListener('change', throttledUpdate);
