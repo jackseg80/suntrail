@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MapControls } from 'three/addons/controls/OrbitControls.js';
+import { MapControls } from 'three/addons/controls/MapControls.js';
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
 import { loadTerrain, updateVisibleTiles } from './terrain.js';
