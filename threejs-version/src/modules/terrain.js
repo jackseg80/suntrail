@@ -86,7 +86,7 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
-        // On laisse Three.js gérer sa texture de la façon dont il a l'habitude (flipY = true par défaut)
+        colorTex.flipY = false; // VITAL : Maintient les textes lisibles et l'image à l'endroit
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
@@ -101,7 +101,14 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         const heightScale = 1 / Math.cos(lat * Math.PI / 180);
 
         const vertices = geometry.attributes.position.array;
+        const uvs = geometry.attributes.uv.array;
         
+        // Inversion absolue de l'axe V de la géométrie pour correspondre à flipY = false
+        // Cela garantit que la physique (montagnes) s'aligne 1:1 avec la peinture (texture)
+        for (let i = 1; i < uvs.length; i += 2) {
+            uvs[i] = 1.0 - uvs[i];
+        }
+
         function getElevationBilinear(px, py) {
             if (px < 0) px = 0; if (px >= 255) px = 254.999;
             if (py < 0) py = 0; if (py >= 255) py = 254.999;
@@ -127,24 +134,16 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
                    h11 * wx * wy;
         }
 
-        // PlaneGeometry génère les sommets ligne par ligne.
-        // La ligne iy = 0 correspond au Haut (Nord, Z négatif).
-        // La ligne iy = RESOLUTION correspond au Bas (Sud, Z positif).
-        // Cela correspond EXACTEMENT à la lecture de l'image (Y=0 au Nord).
-        for (let iy = 0; iy <= RESOLUTION; iy++) {
-            const v = iy / RESOLUTION; // 0.0 (Nord) à 1.0 (Sud)
+        // On soulève les sommets en lisant les UV modifiés
+        for (let i = 0; i < vertices.length / 3; i++) {
+            const u = uvs[i * 2];
+            const v = uvs[i * 2 + 1];
             
-            for (let ix = 0; ix <= RESOLUTION; ix++) {
-                const u = ix / RESOLUTION; // 0.0 (Ouest) à 1.0 (Est)
-                
-                const canvasX = u * 255;
-                const canvasY = v * 255; 
-                
-                const h = getElevationBilinear(canvasX, canvasY);
-                
-                const vertexIndex = (iy * (RESOLUTION + 1) + ix) * 3;
-                vertices[vertexIndex + 1] = (h > -9000 ? h : minH) * heightScale;
-            }
+            const canvasX = u * 255;
+            const canvasY = v * 255; 
+            
+            const h = getElevationBilinear(canvasX, canvasY);
+            vertices[i * 3 + 1] = (h > -9000 ? h : minH) * heightScale;
         }
         
         // Lissage des ombres
