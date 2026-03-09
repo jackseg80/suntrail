@@ -45,7 +45,8 @@ export async function initScene() {
         state.TARGET_LON = state.initialLon + dLon;
         state.TARGET_LAT = state.initialLat + dLat;
 
-        updateVisibleTiles();
+        // Passe la hauteur de la caméra pour adapter le rayon de chargement
+        updateVisibleTiles(state.TARGET_LAT, state.TARGET_LON, state.camera.position.y);
     }, 500);
     
     state.controls.addEventListener('change', throttledUpdate);

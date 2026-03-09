@@ -16,13 +16,23 @@ function tileToLat(y, z) {
     return (180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
 }
 
-export async function updateVisibleTiles() {
+export async function updateVisibleTiles(camLat, camLon, camAltitude) {
     if (!state.mapCenter) {
         state.mapCenter = { lat: state.TARGET_LAT, lon: state.TARGET_LON };
     }
 
-    const centerTile = lngLatToTile(state.TARGET_LON, state.TARGET_LAT, state.ZOOM);
-    const range = 2; // Zone de 5x5 tuiles autour du centre
+    const currentLat = camLat || state.TARGET_LAT;
+    const currentLon = camLon || state.TARGET_LON;
+
+    const centerTile = lngLatToTile(currentLon, currentLat, state.ZOOM);
+    
+    // Range dynamique : si la caméra est très haute (dézoom), on charge plus loin !
+    // Altitude de base ~3000 unités. Si altitude = 8000, on charge 3 tuiles (7x7), etc.
+    let range = 2; // Par défaut : 5x5 tuiles
+    if (camAltitude) {
+        if (camAltitude > 12000) range = 4; // 9x9 = 81 tuiles (Très large vue)
+        else if (camAltitude > 6000) range = 3; // 7x7 = 49 tuiles
+    }
     
     const neededTiles = new Set();
 
@@ -39,7 +49,7 @@ export async function updateVisibleTiles() {
         }
     }
 
-    // Nettoyage des tuiles lointaines
+    // Nettoyage des tuiles lointaines (hors du nouveau range)
     for (const [key, mesh] of activeTiles.entries()) {
         if (!neededTiles.has(key)) {
             if (mesh) {
