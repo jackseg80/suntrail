@@ -1,6 +1,6 @@
 import { state } from './config.js';
 import SunCalc from 'suncalc';
-import shaderWgsl from '../shaders/shadow.wgsl?raw'; // Utilisation de vite pour charger le texte
+import shaderWgsl from '../shaders/shadow.wgsl?raw';
 
 export async function initWebGPU() {
     try {
@@ -22,7 +22,7 @@ export async function initWebGPU() {
         
         state.gpuAvailable = true;
         document.getElementById('gpu-badge-slot').innerHTML = `<span class="gpu-badge webgpu">⚡ WebGPU</span>`;
-        document.getElementById('shadow-desc').textContent = `GPU: ${state.gpuName}. Ray-casting accéléré.`;
+        document.getElementById('shadow-desc').textContent = `GPU: ${state.gpuName}. Ray-casting + Self-shadowing natif.`;
         document.getElementById('srs').value = '1024';
     } catch (e) {
         state.gpuAvailable = false;
@@ -36,30 +36,27 @@ export async function initWebGPU() {
     }
 }
 
-async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcX, mpcY) {
+async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat) {
     const totalPixels = gridSize * gridSize;
-    const rawDx = Math.sin(sunAz * Math.PI / 180) / mpcX;
-    const rawDy = -Math.cos(sunAz * Math.PI / 180) / mpcY;
-    const maxComp = Math.max(Math.abs(rawDx), Math.abs(rawDy));
-    const ndx = rawDx / maxComp, ndy = rawDy / maxComp;
-    const stepDist = Math.sqrt((ndx * mpcX) ** 2 + (ndy * mpcY) ** 2);
-    const maxSteps = Math.min(Math.ceil(50000 / stepDist), gridSize * 2);
+    const packedLength = totalPixels / 4; // Compression par 4 (4 valeurs d'ombre 8-bit dans 1 u32)
     
     const elevBuf = state.gpuDevice.createBuffer({ size: totalPixels * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     state.gpuDevice.queue.writeBuffer(elevBuf, 0, elevGrid);
     
-    const shadowBuf = state.gpuDevice.createBuffer({ size: totalPixels * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    const readBuf = state.gpuDevice.createBuffer({ size: totalPixels * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const shadowBuf = state.gpuDevice.createBuffer({ size: packedLength * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const readBuf = state.gpuDevice.createBuffer({ size: packedLength * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
     
-    const paramsData = new ArrayBuffer(24);
+    const paramsData = new ArrayBuffer(32);
     new Uint32Array(paramsData, 0, 1)[0] = gridSize;
     new Float32Array(paramsData, 4, 1)[0] = sunAz;
     new Float32Array(paramsData, 8, 1)[0] = sunAlt;
-    new Float32Array(paramsData, 12, 1)[0] = mpcX;
-    new Float32Array(paramsData, 16, 1)[0] = mpcY;
-    new Uint32Array(paramsData, 20, 1)[0] = maxSteps;
+    new Float32Array(paramsData, 12, 1)[0] = mpcY;
+    new Uint32Array(paramsData, 16, 1)[0] = maxSteps;
+    new Float32Array(paramsData, 20, 1)[0] = gridWidthLon;
+    new Float32Array(paramsData, 24, 1)[0] = gridNorthLat;
+    new Float32Array(paramsData, 28, 1)[0] = gridSouthLat;
     
-    const paramBuf = state.gpuDevice.createBuffer({ size: 24, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const paramBuf = state.gpuDevice.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     state.gpuDevice.queue.writeBuffer(paramBuf, 0, paramsData);
     
     const module = state.gpuDevice.createShaderModule({ code: shaderWgsl });
@@ -74,40 +71,38 @@ async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcX, mpcY) {
     });
     
     const wgSize = 256;
-    const numWG = Math.ceil(totalPixels / wgSize);
+    const numWG = Math.ceil(packedLength / wgSize);
     const encoder = state.gpuDevice.createCommandEncoder();
     const pass = encoder.beginComputePass();
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(numWG);
     pass.end();
-    encoder.copyBufferToBuffer(shadowBuf, 0, readBuf, 0, totalPixels * 4);
+    encoder.copyBufferToBuffer(shadowBuf, 0, readBuf, 0, packedLength * 4);
     state.gpuDevice.queue.submit([encoder.finish()]);
     
     await readBuf.mapAsync(GPUMapMode.READ);
-    const result = new Uint32Array(readBuf.getMappedRange().slice(0));
+    // Grâce au format Little Endian, le ArrayBuffer compressé peut être lu directement
+    // comme un tableau classique de pixels (1 octet par pixel) ! Zéro traitement CPU.
+    const intensity = new Uint8Array(readBuf.getMappedRange().slice(0));
     readBuf.unmap();
     elevBuf.destroy(); shadowBuf.destroy(); readBuf.destroy(); paramBuf.destroy();
     
-    const intensity = new Uint8Array(totalPixels);
-    for (let i = 0; i < totalPixels; i++) intensity[i] = Math.min(255, result[i]);
     return intensity;
 }
 
 function createCpuWorker() {
     const code = `self.onmessage=function(e){
-    const{elevGrid,gridSize,sunAzDeg,sunAltDeg,metersPerCellX,metersPerCellY}=e.data;
-    const intensity=new Uint8Array(gridSize*gridSize);
-    const PI=Math.PI,sunAzRad=sunAzDeg*PI/180,sunAltRad=sunAltDeg*PI/180;
-    const sunRadius=0.00465;
-    const rawDx=Math.sin(sunAzRad)/metersPerCellX,rawDy=-Math.cos(sunAzRad)/metersPerCellY;
-    const mc=Math.max(Math.abs(rawDx),Math.abs(rawDy));
-    const dx=rawDx/mc,dy=rawDy/mc;
-    const stepDist=Math.sqrt((dx*metersPerCellX)**2+(dy*metersPerCellY)**2);
-    const maxSteps=Math.min(Math.ceil(50000/stepDist),gridSize*2)|0;
-    const effectiveR=7433000;
-    const sunTop=sunAltRad+sunRadius,sunBot=sunAltRad-sunRadius,sunDiam=sunTop-sunBot;
+    const{elevGrid,gridSize,sunAzDeg,sunAltDeg,mpcY,maxSteps,gridWidthLon,gridNorthLat,gridSouthLat}=e.data;
     const gs=gridSize;
+    const intensity=new Uint8Array(gs*gs);
+    const PI=Math.PI,sunAzRad=sunAzDeg*PI/180,sunAltRad=sunAltDeg*PI/180;
+    const sunRadius=0.00465,effectiveR=7433000;
+    const sunTop=sunAltRad+sunRadius,sunBot=sunAltRad-sunRadius,sunDiam=sunTop-sunBot;
+    const cosAltD=Math.cos(sunAltRad),sinAltD=Math.sin(sunAltRad);
+    const sdx=Math.sin(sunAzRad)*cosAltD,sdy=-Math.cos(sunAzRad)*cosAltD,sdz=sinAltD;
+    const radii=[4,8,14];
+    
     function samp(fx,fy){
         const x0=Math.max(0,Math.floor(fx)),y0=Math.max(0,Math.floor(fy));
         const x1=Math.min(x0+1,gs-1),y1=Math.min(y0+1,gs-1);
@@ -117,33 +112,68 @@ function createCpuWorker() {
         const wx=fx-Math.floor(fx),wy=fy-Math.floor(fy);
         return e00*(1-wx)*(1-wy)+e10*wx*(1-wy)+e01*(1-wx)*wy+e11*wx*wy;
     }
-    for(let y=0;y<gs;y++){for(let x=0;x<gs;x++){
-        const idx=y*gs+x,base=elevGrid[idx];
-        if(base<-9000){intensity[idx]=0;continue;}
-        let maxAngle=-1.5708;
-        for(let s=1;s<=maxSteps;s++){
-            const fx=x+dx*s,fy=y+dy*s;
-            if(fx<0||fx>=gs-1||fy<0||fy>=gs-1)break;
-            const se=samp(fx,fy);if(se<-9000)continue;
-            const d=s*stepDist,curv=d*d/(2*effectiveR);
-            const angle=Math.atan2(se-curv-base,d);
-            if(angle>maxAngle)maxAngle=angle;
-            if(maxAngle>sunTop+0.02)break;
+    
+    for(let y=0;y<gs;y++){
+        const latDeg=gridNorthLat-(y/gs)*(gridNorthLat-gridSouthLat);
+        const mpcX=(gridWidthLon*111320*Math.cos(latDeg*PI/180))/gs;
+        const rawDx=Math.sin(sunAzRad)/mpcX,rawDy=-Math.cos(sunAzRad)/mpcY;
+        const mc=Math.max(Math.abs(rawDx),Math.abs(rawDy));
+        const dx=rawDx/mc,dy=rawDy/mc;
+        const stepDist=Math.sqrt((dx*mpcX)**2+(dy*mpcY)**2);
+        
+        for(let x=0;x<gs;x++){
+            const idx=y*gs+x,base=elevGrid[idx];
+            if(base<-9000){intensity[idx]=0;continue;}
+            
+            let maxAngle=-1.5708;
+            for(let s=1;s<=maxSteps;s++){
+                const fx=x+dx*s,fy=y+dy*s;
+                if(fx<0||fx>=gs-1||fy<0||fy>=gs-1)break;
+                const se=samp(fx,fy);if(se<-9000)continue;
+                const d=s*stepDist,curv=d*d/(2*effectiveR);
+                const angle=Math.atan2(se-curv-base,d);
+                if(angle>maxAngle)maxAngle=angle;
+                if(maxAngle>sunTop+0.02)break;
+            }
+            
+            let val=0;
+            if(maxAngle>=sunTop)val=1.0;
+            else if(maxAngle>sunBot)val=(maxAngle-sunBot)/sunDiam;
+            
+            let bestSelf=0;
+            for(const r of radii){
+                if(x<r||x>=gs-r||y<r||y>=gs-r)continue;
+                const eL=elevGrid[y*gs+(x-r)],eR=elevGrid[y*gs+(x+r)];
+                const eU=elevGrid[(y-r)*gs+x],eD=elevGrid[(y+r)*gs+x];
+                if(eL<-9000||eR<-9000||eU<-9000||eD<-9000)continue;
+                const dzdx=(eR-eL)/(r*2*mpcX),dzdy=(eD-eU)/(r*2*mpcY);
+                const slopeMag=Math.sqrt(dzdx*dzdx+dzdy*dzdy);
+                if(slopeMag<0.12)continue;
+                const nx=-dzdx,ny=-dzdy,nz=1;
+                const nLen=Math.sqrt(nx*nx+ny*ny+nz*nz);
+                const cosA=(nx*sdx+ny*sdy+nz*sdz)/nLen;
+                let sh=0;
+                if(cosA<=0)sh=1.0;
+                else if(cosA>=0.35)sh=0;
+                else if(cosA<=0.15)sh=1.0;
+                else sh=(0.35-cosA)/0.20;
+                if(sh>bestSelf)bestSelf=sh;
+                if(bestSelf>=1.0)break;
+            }
+            
+            intensity[idx]=Math.round(Math.max(val,bestSelf)*255);
         }
-        let val=0;
-        if(maxAngle>=sunTop)val=255;
-        else if(maxAngle>sunBot)val=Math.round(((maxAngle-sunBot)/sunDiam)*255);
-        intensity[idx]=val;}}
+    }
     self.postMessage({intensity},[intensity.buffer]);};`;
     return new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' })));
 }
 
-function cpuCast(gs, sunAz, sunAlt, mpcX, mpcY) {
+function cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat) {
     return new Promise(resolve => {
         if (!state.cpuWorker) state.cpuWorker = createCpuWorker();
         state.cpuWorker.onmessage = e => { resolve(e.data.intensity); };
         const copy = new Float32Array(state.cachedGrid);
-        state.cpuWorker.postMessage({ elevGrid: copy, gridSize: gs, sunAzDeg: sunAz, sunAltDeg: sunAlt, metersPerCellX: mpcX, metersPerCellY: mpcY }, [copy.buffer]);
+        state.cpuWorker.postMessage({ elevGrid: copy, gridSize: gs, sunAzDeg: sunAz, sunAltDeg: sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat }, [copy.buffer]);
     });
 }
 
@@ -188,68 +218,39 @@ export async function recompute() {
     const sp = SunCalc.getPosition(state.curDate, c.lat, c.lng);
     const sunAz = ((sp.azimuth * 180 / Math.PI) + 180) % 360;
     const sunAlt = sp.altitude * 180 / Math.PI;
+    
     const b = state.cachedBounds;
     const gs = state.cachedGS;
-    const mpcX = ((b.east - b.west) * 111320 * Math.cos(c.lat * Math.PI / 180)) / gs;
+    
+    // Nouveaux paramètres pour calcul dynamique selon la latitude (correction Web Mercator)
+    const gridWidthLon = b.east - b.west;
+    const gridNorthLat = b.north;
+    const gridSouthLat = b.south;
     const mpcY = ((b.north - b.south) * 111320) / gs;
+    
+    // Détermination conservatrice du maxSteps global
+    const midMpcX = (gridWidthLon * 111320 * Math.cos(c.lat * Math.PI / 180)) / gs;
+    const rawDx = Math.sin(sunAz * Math.PI / 180) / midMpcX;
+    const rawDy = -Math.cos(sunAz * Math.PI / 180) / mpcY;
+    const maxComp = Math.max(Math.abs(rawDx), Math.abs(rawDy));
+    const stepDist = Math.sqrt(((rawDx / maxComp) * midMpcX) ** 2 + ((rawDy / maxComp) * mpcY) ** 2);
+    const maxSteps = Math.min(Math.ceil(50000 / stepDist), gs * 2);
 
     const t0 = performance.now();
     let intensity;
     
     if (state.gpuAvailable) {
         st.textContent = `⚡ GPU ray-casting (${gs}px)...`;
-        try { intensity = await gpuCastShadows(state.cachedGrid, gs, sunAz, sunAlt, mpcX, mpcY); }
-        catch (e) { console.error('GPU error, falling back to CPU:', e); intensity = await cpuCast(gs, sunAz, sunAlt, mpcX, mpcY); }
+        try { intensity = await gpuCastShadows(state.cachedGrid, gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat); }
+        catch (e) { console.error('GPU error, falling back to CPU:', e); intensity = await cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat); }
     } else {
         st.textContent = `🖥️ CPU ray-casting (${gs}px)...`;
-        intensity = await cpuCast(gs, sunAz, sunAlt, mpcX, mpcY);
+        intensity = await cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat);
     }
 
     const dt = ((performance.now() - t0) / 1000).toFixed(2);
     
-    // Post-processing self-shadow
-    const sunAzRad = sunAz * Math.PI / 180, sunAltRad = sunAlt * Math.PI / 180;
-    const cosAltD = Math.cos(sunAltRad), sinAltD = Math.sin(sunAltRad);
-    const sdx = Math.sin(sunAzRad) * cosAltD, sdy = -Math.cos(sunAzRad) * cosAltD, sdz = sinAltD;
-    const radii = [4, 8, 14];
-    const maxR = radii[radii.length - 1];
-    
-    function computeSelfShadow(x, y, r) {
-        if (x < r || x >= gs - r || y < r || y >= gs - r) return 0;
-        const eL = state.cachedGrid[y * gs + (x - r)], eR = state.cachedGrid[y * gs + (x + r)];
-        const eU = state.cachedGrid[(y - r) * gs + x], eD = state.cachedGrid[(y + r) * gs + x];
-        if (eL < -9000 || eR < -9000 || eU < -9000 || eD < -9000) return 0;
-        const dzdx = (eR - eL) / (r * 2 * mpcX);
-        const dzdy = (eD - eU) / (r * 2 * mpcY);
-        const slopeMag = Math.sqrt(dzdx * dzdx + dzdy * dzdy);
-        if (slopeMag < 0.12) return 0;
-        const nx = -dzdx, ny = -dzdy, nz = 1;
-        const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
-        const cosA = (nx * sdx + ny * sdy + nz * sdz) / nLen;
-        if (cosA <= 0) return 1.0;
-        if (cosA >= 0.35) return 0;
-        if (cosA <= 0.15) return 1.0;
-        return (0.35 - cosA) / 0.20;
-    }
-    
-    for (let y = maxR; y < gs - maxR; y++) {
-        for (let x = maxR; x < gs - maxR; x++) {
-            const idx = y * gs + x;
-            if (state.cachedGrid[idx] < -9000) continue;
-            let best = 0;
-            for (const r of radii) {
-                const sh = computeSelfShadow(x, y, r);
-                if (sh > best) best = sh;
-                if (best >= 1.0) break;
-            }
-            if (best > 0) {
-                const selfVal = Math.round(best * 255);
-                if (selfVal > intensity[idx]) {
-                    intensity[idx] = selfVal;
-                }
-            }
-        }
-    }
+    // Le Post-processing est maintenant fait nativement par le Shader !
     
     renderShadow(intensity, gs, b.west, b.south, b.east, b.north);
     st.className = 'ss dn';
@@ -257,7 +258,7 @@ export async function recompute() {
     for (let i = 0; i < intensity.length; i++) { if (intensity[i] === 255) shFull++; else if (intensity[i] > 0) shPartial++; }
     const shPct = ((shFull + shPartial) * 100 / intensity.length).toFixed(1);
     
-    st.innerHTML = `✅ ${gs}px en ${dt}s ${state.gpuAvailable ? '(GPU)' : '(CPU)'} — ${shPct}% ombre<br>`;
+    st.innerHTML = `✅ ${gs}px en ${dt}s ${state.gpuAvailable ? '(GPU⚡)' : '(CPU🖥️)'} — ${shPct}% ombre<br>`;
     document.getElementById('bdbg').style.display = 'block';
     state.shadowPending = false;
 }
