@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { state } from './state.js';
 
 const EARTH_CIRCUMFERENCE = 40075016.68;
-const RESOLUTION = 128; // 128x128 segments par tuile
+const RESOLUTION = 256; // 256x256 segments par tuile pour un maillage HD
 export const activeTiles = new Map(); 
 
 export function lngLatToTile(lon, lat, zoom) {
@@ -86,12 +86,10 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
-        colorTex.flipY = false; // Désactive la magie incertaine de WebGL
+        // On laisse Three.js gérer sa texture de la façon dont il a l'habitude (flipY = true par défaut)
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
-        
-        // Coordonnées de placement de la tuile dans le monde (Three.js: X=Est, Z=Sud)
         const dx = (tx - originTile.x) * tileSizeMeters;
         const dz = (ty - originTile.y) * tileSizeMeters;
 
@@ -103,14 +101,6 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         const heightScale = 1 / Math.cos(lat * Math.PI / 180);
 
         const vertices = geometry.attributes.position.array;
-        const uvs = geometry.attributes.uv.array;
-        
-        // Inversion absolue de l'axe V de la géométrie.
-        // Par défaut, le Nord (-Z) avait V=1. Maintenant le Nord aura V=0.
-        // Cela correspond parfaitement à l'image (0 = Haut/Nord) et annule les bugs de ImageBitmap.
-        for (let i = 1; i < uvs.length; i += 2) {
-            uvs[i] = 1.0 - uvs[i];
-        }
         
         function getElevationBilinear(px, py) {
             if (px < 0) px = 0; if (px >= 255) px = 254.999;
@@ -137,19 +127,24 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
                    h11 * wx * wy;
         }
 
-        // On parcourt chaque sommet du maillage
-        for (let i = 0; i < vertices.length / 3; i++) {
-            const u = uvs[i * 2];
-            const v = uvs[i * 2 + 1];
+        // PlaneGeometry génère les sommets ligne par ligne.
+        // La ligne iy = 0 correspond au Haut (Nord, Z négatif).
+        // La ligne iy = RESOLUTION correspond au Bas (Sud, Z positif).
+        // Cela correspond EXACTEMENT à la lecture de l'image (Y=0 au Nord).
+        for (let iy = 0; iy <= RESOLUTION; iy++) {
+            const v = iy / RESOLUTION; // 0.0 (Nord) à 1.0 (Sud)
             
-            // Puisque V=0 est maintenant le Nord de la géométrie,
-            // et que le canvas d'élévation a Y=0 au Nord,
-            // il n'y a plus AUCUNE inversion à faire !
-            const canvasX = u * 255;
-            const canvasY = v * 255; 
-            
-            const h = getElevationBilinear(canvasX, canvasY);
-            vertices[i * 3 + 1] = (h > -9000 ? h : minH) * heightScale;
+            for (let ix = 0; ix <= RESOLUTION; ix++) {
+                const u = ix / RESOLUTION; // 0.0 (Ouest) à 1.0 (Est)
+                
+                const canvasX = u * 255;
+                const canvasY = v * 255; 
+                
+                const h = getElevationBilinear(canvasX, canvasY);
+                
+                const vertexIndex = (iy * (RESOLUTION + 1) + ix) * 3;
+                vertices[vertexIndex + 1] = (h > -9000 ? h : minH) * heightScale;
+            }
         }
         
         // Lissage des ombres
