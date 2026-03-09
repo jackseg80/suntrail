@@ -86,15 +86,16 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
-        colorTex.flipY = false; // Maintient les textes lisibles et l'image à l'endroit
+        // On laisse Three.js gérer la texture normalement pour un Plane (qui est inversée par défaut en WebGL)
+        // colorTex.flipY est true par défaut.
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
         
+        // Coordonnées de placement de la tuile dans le monde (Three.js: X=Est, Z=Sud)
         const dx = (tx - originTile.x) * tileSizeMeters;
         const dz = (ty - originTile.y) * tileSizeMeters;
 
-        // Légère augmentation (+0.5%) de la taille pour boucher les coutures (seams/gaps)
         const overlapSize = tileSizeMeters * 1.005;
         const geometry = new THREE.PlaneGeometry(overlapSize, overlapSize, RESOLUTION, RESOLUTION);
         geometry.rotateX(-Math.PI / 2);
@@ -132,8 +133,15 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         }
 
         for (let i = 0; i < vertices.length; i += 3) {
+            // Un PlaneGeometry va de x = -width/2 (Ouest) à +width/2 (Est)
             const u = (vertices[i] / overlapSize) + 0.5;
-            // Pas d'inversion car l'image est retournée avec flipY=false par rapport à l'axe Z 3D (-Z = Nord = 0)
+            
+            // Après rotateX(-PI/2), le haut du plan original (Y positif) pointe vers Z NÉGATIF (Nord).
+            // Le bas du plan (Y négatif) pointe vers Z POSITIF (Sud).
+            // L'image de la heightmap va de Y=0 (Nord) à Y=256 (Sud).
+            // Donc quand Z est négatif (Nord), on veut lire Y=0.
+            // Donc v = (Z / size) + 0.5 -> Z=-size/2 donne v=0 (Haut de l'image).
+            // C'est exactement le comportement naturel de la Heightmap !
             const v = (vertices[i+2] / overlapSize) + 0.5; 
             
             const h = getElevationBilinear(u, v);
