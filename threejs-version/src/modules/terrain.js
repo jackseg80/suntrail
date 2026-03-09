@@ -102,9 +102,13 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         colorTex.flipY = false; // VITAL : Maintient les textes lisibles et l'image à l'endroit
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
+        // Calcul exact de la taille de la tuile en projection Web Mercator
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
-        const dx = (tx - originTile.x) * tileSizeMeters;
-        const dz = (ty - originTile.y) * tileSizeMeters;
+        
+        // CORRECTION MAJEURE: On utilise une origine FIXE pour toute la session (state.originTile)
+        // Cela garantit que toutes les tuiles partagent le même repère 3D sans se chevaucher.
+        const dx = (tx - state.originTile.x) * tileSizeMeters;
+        const dz = (ty - state.originTile.y) * tileSizeMeters;
 
         const overlapSize = tileSizeMeters * 1.005;
         const geometry = new THREE.PlaneGeometry(overlapSize, overlapSize, RESOLUTION, RESOLUTION);

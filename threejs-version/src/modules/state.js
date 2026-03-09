@@ -4,6 +4,11 @@ export const state = {
     TARGET_LON: 6.8652,
     ZOOM: 13, // HD Zoom
     
+    // Position initiale pour le repère 3D (évite les superpositions)
+    initialLat: 45.8326,
+    initialLon: 6.8652,
+    originTile: { x: 0, y: 0 },
+    
     // Three.js instances
     scene: null,
     camera: null,

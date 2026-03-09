@@ -67,6 +67,7 @@ function initGeocoding() {
                         if (state.controls) {
                             state.initialLat = lat;
                             state.initialLon = lng;
+                            state.originTile = lngLatToTile(lng, lat, state.ZOOM);
                             state.controls.target.set(0, 0, 0);
                             state.camera.position.set(0, 3000, 8000);
                             state.controls.update(); // Validation vitale du déplacement

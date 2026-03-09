@@ -2,11 +2,16 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
-import { loadTerrain, updateVisibleTiles } from './terrain.js';
+import { loadTerrain, updateVisibleTiles, lngLatToTile } from './terrain.js';
 import { throttle } from './utils.js';
 
 export async function initScene() {
     const container = document.getElementById('canvas-container');
+    // Sécurité : on nettoie tout canevas existant pour éviter les doublons
+    container.innerHTML = '';
+    
+    // Fixation de l'origine mathématique du monde (Tile Origin)
+    state.originTile = lngLatToTile(state.TARGET_LON, state.TARGET_LAT, state.ZOOM);
     
     // 1. Scène et Brouillard
     state.scene = new THREE.Scene();
