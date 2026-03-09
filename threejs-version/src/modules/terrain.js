@@ -106,7 +106,8 @@ export async function loadTerrain() {
 
     for (let i = 0; i < positions.length; i += 3) {
         const u = (positions[i] / planeSize) + 0.5;
-        const v = 1.0 - ((positions[i+2] / planeSize) + 0.5);
+        // Correction de l'inversion Nord/Sud : l'axe Z pointe vers le Sud dans Three.js
+        const v = (positions[i+2] / planeSize) + 0.5; 
         
         const h = getElevationBilinear(u, v);
         positions[i+1] = h > -9000 ? h : minH; 
