@@ -72,12 +72,12 @@ function initGeocoding() {
                         }
                         
                         // 3. Destruction absolue de toutes les anciennes montagnes (tuiles)
-                        for (const [key, mesh] of activeTiles.entries()) {
-                            if (mesh) {
-                                state.scene.remove(mesh);
-                                mesh.geometry.dispose();
-                                mesh.material.map.dispose();
-                                mesh.material.dispose();
+                        for (const [key, tileObj] of activeTiles.entries()) {
+                            if (tileObj && tileObj.mesh) {
+                                state.scene.remove(tileObj.mesh);
+                                tileObj.mesh.geometry.dispose();
+                                if (tileObj.mesh.material.map) tileObj.mesh.material.map.dispose();
+                                tileObj.mesh.material.dispose();
                             }
                         }
                         activeTiles.clear();
