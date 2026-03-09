@@ -2,11 +2,10 @@ struct Params {
     gridSize: u32, 
     sunAzDeg: f32, 
     sunAltDeg: f32, 
-    mpcY: f32, 
     maxSteps: u32, 
     gridWidthLon: f32,
-    gridNorthLat: f32,
-    gridSouthLat: f32,
+    gridNorthMercY: f32,
+    gridSouthMercY: f32,
 }
 
 @group(0) @binding(0) var<storage,read> elevGrid: array<f32>;
@@ -30,7 +29,6 @@ fn sampleBilinear(fx: f32, fy: f32, gs: u32) -> f32 {
     return e00 * (1.0 - wx) * (1.0 - wy) + e10 * wx * (1.0 - wy) + e01 * (1.0 - wx) * wy + e11 * wx * wy;
 }
 
-// Optimization #3 : Dispatch 4x fewer threads. Each thread computes 4 pixels and packs them.
 @compute @workgroup_size(256) 
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let baseIdx = gid.x * 4u;
@@ -52,32 +50,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var packed: u32 = 0u;
     
-    // Process 4 pixels per thread
     for (var pIdx: u32 = 0u; pIdx < 4u; pIdx = pIdx + 1u) {
         let idx = baseIdx + pIdx;
         let y = idx / gs;
         let x = idx % gs;
         
         let baseElev = elevGrid[idx];
-        if (baseElev < -9000.0) { 
-            continue; // Leaves the byte as 0u (sunlight / no shadow)
-        }
+        if (baseElev < -9000.0) { continue; }
         
-        // Optimization #2 : Dynamic Mercator Scale per latitude row
-        let latDeg = params.gridNorthLat - (f32(y) / f32(gs)) * (params.gridNorthLat - params.gridSouthLat);
-        let mpcX = (params.gridWidthLon * 111320.0 * cos(latDeg * PI / 180.0)) / f32(gs);
+        // Exact physical distance of 1 pixel at this Web Mercator Y coordinate
+        let mercY = params.gridNorthMercY - (f32(y) / f32(gs)) * (params.gridNorthMercY - params.gridSouthMercY);
+        let latRad = 2.0 * atan(exp(mercY)) - 1.57079632679;
+        let mpc = (params.gridWidthLon * 111320.0 * cos(latRad)) / f32(gs);
         
-        let rawDx = sin(sunAzRad) / mpcX;
-        let rawDy = -cos(sunAzRad) / params.mpcY;
+        // Web Mercator is conformal : Grid angles = Physical angles
+        let rawDx = sin(sunAzRad);
+        let rawDy = -cos(sunAzRad);
         let mc = max(abs(rawDx), abs(rawDy));
         let dx = rawDx / mc;
         let dy = rawDy / mc;
-        let stepDist = sqrt((dx * mpcX) * (dx * mpcX) + (dy * params.mpcY) * (dy * params.mpcY));
+        let stepDist = sqrt(dx * dx + dy * dy) * mpc;
         
         var maxHA: f32 = -1.5708;
         let sunTop = sunAltRad + sunRadius;
         
-        // 1. Ray Marching (Global shadows from mountains)
         for (var s: u32 = 1u; s <= params.maxSteps; s = s + 1u) {
             let sf = f32(s);
             let fx = f32(x) + dx * sf;
@@ -100,7 +96,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             val = (maxHA - sunBot) / (sunTop - sunBot); 
         }
         
-        // 2. Optimization #1 : Self-Shadowing natively in WGSL
         var bestSelf: f32 = 0.0;
         for (var i: u32 = 0u; i < 3u; i = i + 1u) {
             let r = radii[i];
@@ -113,10 +108,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             
             if (eL < -9000.0 || eR < -9000.0 || eU < -9000.0 || eD < -9000.0) { continue; }
             
-            let dzdx = (eR - eL) / (f32(r) * 2.0 * mpcX);
-            let dzdy = (eD - eU) / (f32(r) * 2.0 * params.mpcY);
+            let dzdx = (eR - eL) / (f32(r) * 2.0 * mpc);
+            let dzdy = (eD - eU) / (f32(r) * 2.0 * mpc);
             let slopeMag = sqrt(dzdx * dzdx + dzdy * dzdy);
-            if (slopeMag < 0.12) { continue; } // Flat enough, skip
+            if (slopeMag < 0.12) { continue; }
             
             let nx = -dzdx;
             let ny = -dzdy;
@@ -134,11 +129,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (bestSelf >= 1.0) { break; }
         }
         
-        // Final composite and binary packing
         let finalVal = max(val, bestSelf);
         let shadowByte = u32(round(finalVal * 255.0));
-        
-        // Shift bits into correct byte slot (0, 8, 16, 24)
         packed = packed | (shadowByte << (pIdx * 8u));
     }
     

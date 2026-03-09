@@ -2,6 +2,10 @@ import { state } from './config.js';
 import SunCalc from 'suncalc';
 import shaderWgsl from '../shaders/shadow.wgsl?raw';
 
+// --- Utilitaires de projection Web Mercator ---
+function lat2mercY(lat) { return Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)); }
+function mercY2lat(y) { return (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI; }
+
 export async function initWebGPU() {
     try {
         if (!navigator.gpu) throw new Error('API navigator.gpu absente');
@@ -36,9 +40,9 @@ export async function initWebGPU() {
     }
 }
 
-async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat) {
+async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY) {
     const totalPixels = gridSize * gridSize;
-    const packedLength = totalPixels / 4; // Compression par 4 (4 valeurs d'ombre 8-bit dans 1 u32)
+    const packedLength = totalPixels / 4; 
     
     const elevBuf = state.gpuDevice.createBuffer({ size: totalPixels * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     state.gpuDevice.queue.writeBuffer(elevBuf, 0, elevGrid);
@@ -50,11 +54,10 @@ async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcY, maxSteps,
     new Uint32Array(paramsData, 0, 1)[0] = gridSize;
     new Float32Array(paramsData, 4, 1)[0] = sunAz;
     new Float32Array(paramsData, 8, 1)[0] = sunAlt;
-    new Float32Array(paramsData, 12, 1)[0] = mpcY;
-    new Uint32Array(paramsData, 16, 1)[0] = maxSteps;
-    new Float32Array(paramsData, 20, 1)[0] = gridWidthLon;
-    new Float32Array(paramsData, 24, 1)[0] = gridNorthLat;
-    new Float32Array(paramsData, 28, 1)[0] = gridSouthLat;
+    new Uint32Array(paramsData, 12, 1)[0] = maxSteps;
+    new Float32Array(paramsData, 16, 1)[0] = gridWidthLon;
+    new Float32Array(paramsData, 20, 1)[0] = gridNorthMercY;
+    new Float32Array(paramsData, 24, 1)[0] = gridSouthMercY;
     
     const paramBuf = state.gpuDevice.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     state.gpuDevice.queue.writeBuffer(paramBuf, 0, paramsData);
@@ -82,8 +85,6 @@ async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcY, maxSteps,
     state.gpuDevice.queue.submit([encoder.finish()]);
     
     await readBuf.mapAsync(GPUMapMode.READ);
-    // Grâce au format Little Endian, le ArrayBuffer compressé peut être lu directement
-    // comme un tableau classique de pixels (1 octet par pixel) ! Zéro traitement CPU.
     const intensity = new Uint8Array(readBuf.getMappedRange().slice(0));
     readBuf.unmap();
     elevBuf.destroy(); shadowBuf.destroy(); readBuf.destroy(); paramBuf.destroy();
@@ -93,7 +94,7 @@ async function gpuCastShadows(elevGrid, gridSize, sunAz, sunAlt, mpcY, maxSteps,
 
 function createCpuWorker() {
     const code = `self.onmessage=function(e){
-    const{elevGrid,gridSize,sunAzDeg,sunAltDeg,mpcY,maxSteps,gridWidthLon,gridNorthLat,gridSouthLat}=e.data;
+    const{elevGrid,gridSize,sunAzDeg,sunAltDeg,maxSteps,gridWidthLon,gridNorthMercY,gridSouthMercY}=e.data;
     const gs=gridSize;
     const intensity=new Uint8Array(gs*gs);
     const PI=Math.PI,sunAzRad=sunAzDeg*PI/180,sunAltRad=sunAltDeg*PI/180;
@@ -114,12 +115,14 @@ function createCpuWorker() {
     }
     
     for(let y=0;y<gs;y++){
-        const latDeg=gridNorthLat-(y/gs)*(gridNorthLat-gridSouthLat);
-        const mpcX=(gridWidthLon*111320*Math.cos(latDeg*PI/180))/gs;
-        const rawDx=Math.sin(sunAzRad)/mpcX,rawDy=-Math.cos(sunAzRad)/mpcY;
+        const mercY = gridNorthMercY - (y/gs)*(gridNorthMercY - gridSouthMercY);
+        const latRad = 2.0*Math.atan(Math.exp(mercY)) - Math.PI/2;
+        const mpc = (gridWidthLon*111320*Math.cos(latRad))/gs;
+        
+        const rawDx=Math.sin(sunAzRad),rawDy=-Math.cos(sunAzRad);
         const mc=Math.max(Math.abs(rawDx),Math.abs(rawDy));
         const dx=rawDx/mc,dy=rawDy/mc;
-        const stepDist=Math.sqrt((dx*mpcX)**2+(dy*mpcY)**2);
+        const stepDist=Math.sqrt(dx*dx+dy*dy)*mpc;
         
         for(let x=0;x<gs;x++){
             const idx=y*gs+x,base=elevGrid[idx];
@@ -146,7 +149,7 @@ function createCpuWorker() {
                 const eL=elevGrid[y*gs+(x-r)],eR=elevGrid[y*gs+(x+r)];
                 const eU=elevGrid[(y-r)*gs+x],eD=elevGrid[(y+r)*gs+x];
                 if(eL<-9000||eR<-9000||eU<-9000||eD<-9000)continue;
-                const dzdx=(eR-eL)/(r*2*mpcX),dzdy=(eD-eU)/(r*2*mpcY);
+                const dzdx=(eR-eL)/(r*2*mpc),dzdy=(eD-eU)/(r*2*mpc);
                 const slopeMag=Math.sqrt(dzdx*dzdx+dzdy*dzdy);
                 if(slopeMag<0.12)continue;
                 const nx=-dzdx,ny=-dzdy,nz=1;
@@ -168,12 +171,12 @@ function createCpuWorker() {
     return new Worker(URL.createObjectURL(new Blob([code], { type: 'application/javascript' })));
 }
 
-function cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat) {
+function cpuCast(gs, sunAz, sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY) {
     return new Promise(resolve => {
         if (!state.cpuWorker) state.cpuWorker = createCpuWorker();
         state.cpuWorker.onmessage = e => { resolve(e.data.intensity); };
         const copy = new Float32Array(state.cachedGrid);
-        state.cpuWorker.postMessage({ elevGrid: copy, gridSize: gs, sunAzDeg: sunAz, sunAltDeg: sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat }, [copy.buffer]);
+        state.cpuWorker.postMessage({ elevGrid: copy, gridSize: gs, sunAzDeg: sunAz, sunAltDeg: sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY }, [copy.buffer]);
     });
 }
 
@@ -222,35 +225,27 @@ export async function recompute() {
     const b = state.cachedBounds;
     const gs = state.cachedGS;
     
-    // Nouveaux paramètres pour calcul dynamique selon la latitude (correction Web Mercator)
     const gridWidthLon = b.east - b.west;
-    const gridNorthLat = b.north;
-    const gridSouthLat = b.south;
-    const mpcY = ((b.north - b.south) * 111320) / gs;
+    const gridNorthMercY = lat2mercY(b.north);
+    const gridSouthMercY = lat2mercY(b.south);
     
     // Détermination conservatrice du maxSteps global
-    const midMpcX = (gridWidthLon * 111320 * Math.cos(c.lat * Math.PI / 180)) / gs;
-    const rawDx = Math.sin(sunAz * Math.PI / 180) / midMpcX;
-    const rawDy = -Math.cos(sunAz * Math.PI / 180) / mpcY;
-    const maxComp = Math.max(Math.abs(rawDx), Math.abs(rawDy));
-    const stepDist = Math.sqrt(((rawDx / maxComp) * midMpcX) ** 2 + ((rawDy / maxComp) * mpcY) ** 2);
-    const maxSteps = Math.min(Math.ceil(50000 / stepDist), gs * 2);
+    const midMpc = (gridWidthLon * 111320 * Math.cos(c.lat * Math.PI / 180)) / gs;
+    const maxSteps = Math.min(Math.ceil(50000 / midMpc), gs * 2);
 
     const t0 = performance.now();
     let intensity;
     
     if (state.gpuAvailable) {
         st.textContent = `⚡ GPU ray-casting (${gs}px)...`;
-        try { intensity = await gpuCastShadows(state.cachedGrid, gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat); }
-        catch (e) { console.error('GPU error, falling back to CPU:', e); intensity = await cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat); }
+        try { intensity = await gpuCastShadows(state.cachedGrid, gs, sunAz, sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY); }
+        catch (e) { console.error('GPU error, falling back to CPU:', e); intensity = await cpuCast(gs, sunAz, sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY); }
     } else {
         st.textContent = `🖥️ CPU ray-casting (${gs}px)...`;
-        intensity = await cpuCast(gs, sunAz, sunAlt, mpcY, maxSteps, gridWidthLon, gridNorthLat, gridSouthLat);
+        intensity = await cpuCast(gs, sunAz, sunAlt, maxSteps, gridWidthLon, gridNorthMercY, gridSouthMercY);
     }
 
     const dt = ((performance.now() - t0) / 1000).toFixed(2);
-    
-    // Le Post-processing est maintenant fait nativement par le Shader !
     
     renderShadow(intensity, gs, b.west, b.south, b.east, b.north);
     st.className = 'ss dn';
@@ -356,12 +351,17 @@ async function fetchElevCanvas(tiles, zoom, west, south, east, north, gs) {
     }
     
     const grid = new Float32Array(gs * gs);
-    const lonS = (east - west) / gs, latS = (north - south) / gs;
+    
+    // Remplissage de la grille en espace Web Mercator uniforme
+    const yN = lat2mercY(north), yS = lat2mercY(south);
+    const lonS = (east - west) / gs;
     
     for (let gy = 0; gy < gs; gy++) {
-        const lat = north - gy * latS;
+        const mercY = yN - (gy / gs) * (yN - yS);
+        const lat = mercY2lat(mercY);
         const lr = lat * Math.PI / 180;
         const tyf = (1 - Math.log(Math.tan(lr) + 1 / Math.cos(lr)) / Math.PI) / 2 * nt;
+        
         for (let gx = 0; gx < gs; gx++) {
             const lon = west + gx * lonS;
             const txf = (lon + 180) / 360 * nt;
@@ -378,11 +378,17 @@ async function fetchElevCanvas(tiles, zoom, west, south, east, north, gs) {
 function renderShadow(intensity, gs, west, south, east, north) {
     clearShadowLayer();
     const vp = state.cachedViewport || { west, south, east, north };
-    const gridW = east - west, gridH = north - south;
+    const gridW = east - west;
+    
+    // Découpage parfait dans l'espace Web Mercator pour éviter les décalages (slippage)
+    const yN = lat2mercY(north), yS = lat2mercY(south);
+    const vpYN = lat2mercY(vp.north), vpYS = lat2mercY(vp.south);
+    
     const vpx0 = Math.max(0, Math.round((vp.west - west) / gridW * gs));
     const vpx1 = Math.min(gs, Math.round((vp.east - west) / gridW * gs));
-    const vpy0 = Math.max(0, Math.round((north - vp.north) / gridH * gs));
-    const vpy1 = Math.min(gs, Math.round((north - vp.south) / gridH * gs));
+    const vpy0 = Math.max(0, Math.round((yN - vpYN) / (yN - yS) * gs));
+    const vpy1 = Math.min(gs, Math.round((yN - vpYS) / (yN - yS) * gs));
+    
     const vpW = vpx1 - vpx0, vpH = vpy1 - vpy0;
     if (vpW <= 0 || vpH <= 0) return;
 
@@ -410,7 +416,13 @@ function renderShadow(intensity, gs, west, south, east, north) {
     const ctx2 = cv2.getContext('2d');
     ctx2.filter = 'blur(1.5px)'; ctx2.drawImage(cv, 0, 0);
     
-    state.map.addSource('sh-src', { type: 'image', url: cv2.toDataURL(), coordinates: [[vp.west, vp.north], [vp.east, vp.north], [vp.east, vp.south], [vp.west, vp.south]] });
+    // Calcul des coordonnées d'ancrage EXACTES du calque découpé
+    const actualVpWest = west + (vpx0 / gs) * gridW;
+    const actualVpEast = west + (vpx1 / gs) * gridW;
+    const actualVpNorth = mercY2lat(yN - (vpy0 / gs) * (yN - yS));
+    const actualVpSouth = mercY2lat(yN - (vpy1 / gs) * (yN - yS));
+    
+    state.map.addSource('sh-src', { type: 'image', url: cv2.toDataURL(), coordinates: [[actualVpWest, actualVpNorth], [actualVpEast, actualVpNorth], [actualVpEast, actualVpSouth], [actualVpWest, actualVpSouth]] });
     const op = parseFloat(document.getElementById('sop').value);
     const before = state.map.getLayer('sun-path') ? 'sun-path' : undefined;
     state.map.addLayer({ id: 'sh-ov', type: 'raster', source: 'sh-src', paint: { 'raster-opacity': op, 'raster-fade-duration': 0 } }, before);
