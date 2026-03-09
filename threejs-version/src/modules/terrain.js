@@ -133,8 +133,8 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         for (let i = 0; i < vertices.length; i += 3) {
             const u = (vertices[i] / overlapSize) + 0.5;
-            // Inversion de V car l'image est retournée avec flipY=false par rapport à l'axe Z 3D
-            const v = 1.0 - ((vertices[i+2] / overlapSize) + 0.5); 
+            // Pas d'inversion car l'image est retournée avec flipY=false par rapport à l'axe Z 3D (-Z = Nord = 0)
+            const v = (vertices[i+2] / overlapSize) + 0.5; 
             
             const h = getElevationBilinear(u, v);
             vertices[i+1] = (h > -9000 ? h : minH) * heightScale;
