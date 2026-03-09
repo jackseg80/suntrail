@@ -36,7 +36,7 @@ export async function loadTerrain() {
 
             const pElev = fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${state.ZOOM}/${tx}/${ty}.png?key=${state.MK}`)
                 .then(r => r.blob()).then(b => createImageBitmap(b))
-                .then(img => elevCtx.drawImage(img, px, py));
+                .then(img => elevCtx.drawImage(img, px, py, tileSize, tileSize));
                 
             const pColor = fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${state.ZOOM}/${tx}/${ty}@2x.png?key=${state.MK}`)
                 .then(r => r.ok ? r.blob() : fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${state.ZOOM}/${tx}/${ty}.png?key=${state.MK}`).then(r2 => r2.blob()))
@@ -72,14 +72,43 @@ export async function loadTerrain() {
     geometry.rotateX(-Math.PI / 2);
 
     const positions = geometry.attributes.position.array;
+    
+    // Fonction d'interpolation bilinéaire pour lisser les jointures de tuiles et les pentes
+    function getElevationBilinear(u, v) {
+        let x = u * (canvasSize - 1);
+        let y = v * (canvasSize - 1);
+        // Évite de sortir du tableau
+        if (x < 0) x = 0; if (x >= canvasSize - 1) x = canvasSize - 1.001;
+        if (y < 0) y = 0; if (y >= canvasSize - 1) y = canvasSize - 1.001;
+
+        const x0 = Math.floor(x);
+        const y0 = Math.floor(y);
+        const x1 = x0 + 1;
+        const y1 = y0 + 1;
+
+        const wx = x - x0;
+        const wy = y - y0;
+
+        const h00 = heights[y0 * canvasSize + x0];
+        const h10 = heights[y0 * canvasSize + x1];
+        const h01 = heights[y1 * canvasSize + x0];
+        const h11 = heights[y1 * canvasSize + x1];
+
+        // Gérer les pixels manquants (océan/nodata)
+        if (h00 < -9000 || h10 < -9000 || h01 < -9000 || h11 < -9000) return h00;
+
+        // Interpolation
+        return h00 * (1 - wx) * (1 - wy) +
+               h10 * wx * (1 - wy) +
+               h01 * (1 - wx) * wy +
+               h11 * wx * wy;
+    }
+
     for (let i = 0; i < positions.length; i += 3) {
         const u = (positions[i] / planeSize) + 0.5;
         const v = 1.0 - ((positions[i+2] / planeSize) + 0.5);
         
-        const px = Math.floor(u * (canvasSize - 1));
-        const py = Math.floor(v * (canvasSize - 1));
-        
-        const h = heights[py * canvasSize + px];
+        const h = getElevationBilinear(u, v);
         positions[i+1] = h > -9000 ? h : minH; 
     }
 

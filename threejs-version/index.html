@@ -25,8 +25,14 @@
 <div id="canvas-container"></div>
 
 <div id="panel" style="display:none;">
-    <h2>☀️ Simulateur Solaire</h2>
-    <div class="info">Glissez pour tourner la caméra. Molette pour zoomer.</div>
+    <h2>☀️ SunTrail 3D</h2>
+    
+    <div class="control-group" style="position:relative; margin-bottom: 1rem;">
+        <input type="text" id="geo-input" placeholder="🔍 Rechercher un sommet, une ville..." autocomplete="off" style="width:100%; padding:0.6rem; background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:8px; color:white; font-size:0.85rem;">
+        <div id="geo-results" style="display:none; position:absolute; top:100%; left:0; right:0; background:var(--panel); border:1px solid var(--border); border-radius:8px; z-index:100; max-height:200px; overflow-y:auto;"></div>
+    </div>
+
+    <div class="info">Glissez pour tourner. Molette pour zoomer.</div>
     
     <div class="control-group">
         <label>Heure de la journée : <span id="time-disp">12:00</span></label>
