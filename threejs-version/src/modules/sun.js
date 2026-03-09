@@ -9,11 +9,16 @@ export function updateSunPosition(minutes) {
     
     document.getElementById('time-disp').textContent = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
     
-    const date = new Date();
-    date.setHours(hours, mins, 0, 0);
+    const now = new Date();
+    // Calcul de l'heure solaire locale exacte basée sur la longitude de la montagne regardée (1h = 15 degrés)
+    const offsetHours = state.TARGET_LON / 15;
+    const utcTimestamp = (hours - offsetHours) * 3600000 + (mins * 60000);
+    
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+    date.setTime(date.getTime() + utcTimestamp);
     
     const pos = SunCalc.getPosition(date, state.TARGET_LAT, state.TARGET_LON);
-    const az = pos.azimuth; 
+    const az = pos.azimuth; // 0 = Sud, Positif = Ouest, Négatif = Est
     const alt = pos.altitude;
     
     document.getElementById('az-disp').textContent = ((az * 180 / Math.PI) + 180).toFixed(1);
@@ -37,11 +42,11 @@ export function updateSunPosition(minutes) {
         }
         
         const distance = 20000;
-        const theta = az + Math.PI; 
         const phi = alt;
         
-        state.sunLight.position.x = distance * Math.cos(phi) * Math.sin(theta);
+        // Correction des axes Three.js: +Z = Sud, -Z = Nord, +X = Est, -X = Ouest
+        state.sunLight.position.x = distance * Math.cos(phi) * -Math.sin(az);
         state.sunLight.position.y = distance * Math.sin(phi);
-        state.sunLight.position.z = distance * Math.cos(phi) * Math.cos(theta);
+        state.sunLight.position.z = distance * Math.cos(phi) * Math.cos(az);
     }
 }
