@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { state } from './state.js';
 
-const TILE_SIZE_METERS = 5000; // Chaque tuile fera 5km de côté
-const RESOLUTION = 128; // 128x128 segments par tuile pour garder la fluidité
-const activeTiles = new Map(); // Stocke les meshes par clé "x_y_z"
+const EARTH_CIRCUMFERENCE = 40075016.68;
+const RESOLUTION = 128; // 128x128 segments par tuile
+const activeTiles = new Map(); 
 
 export function lngLatToTile(lon, lat, zoom) {
     const x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
@@ -11,25 +11,9 @@ export function lngLatToTile(lon, lat, zoom) {
     return { x, y, z: zoom };
 }
 
-function tileToLng(x, z) {
-    return (x / Math.pow(2, z) * 360 - 180);
-}
-
 function tileToLat(y, z) {
     const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
     return (180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
-}
-
-// Calcule la position 3D (X, Z) d'une tuile par rapport à un point d'origine
-function getTilePosition(tx, ty, zoom, originTile) {
-    const lon = tileToLng(tx, zoom);
-    const lat = tileToLat(ty, zoom);
-    const originLon = tileToLng(originTile.x, zoom);
-    const originLat = tileToLat(originTile.y, zoom);
-
-    const dx = (lon - originLon) * 111320 * Math.cos(lat * Math.PI / 180);
-    const dz = (originLat - lat) * 111320;
-    return { x: dx, z: dz };
 }
 
 export async function updateVisibleTiles() {
@@ -38,7 +22,7 @@ export async function updateVisibleTiles() {
     }
 
     const centerTile = lngLatToTile(state.TARGET_LON, state.TARGET_LAT, state.ZOOM);
-    const range = 2; // On charge 2 tuiles autour du centre (total 5x5)
+    const range = 2; // Zone de 5x5 tuiles autour du centre
     
     const neededTiles = new Set();
 
@@ -55,20 +39,22 @@ export async function updateVisibleTiles() {
         }
     }
 
-    // Nettoyage des tuiles trop lointaines
+    // Nettoyage des tuiles lointaines
     for (const [key, mesh] of activeTiles.entries()) {
         if (!neededTiles.has(key)) {
-            state.scene.remove(mesh);
-            mesh.geometry.dispose();
-            mesh.material.dispose();
+            if (mesh) {
+                state.scene.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.map.dispose();
+                mesh.material.dispose();
+            }
             activeTiles.delete(key);
         }
     }
 }
 
 async function loadSingleTile(tx, ty, zoom, originTile, key) {
-    // On marque la tuile comme "en cours" pour éviter les doublons
-    activeTiles.set(key, null);
+    activeTiles.set(key, null); // Marque comme "en cours de chargement"
 
     try {
         const pElev = fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${zoom}/${tx}/${ty}.png?key=${state.MK}`)
@@ -80,50 +66,102 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const [imgElev, imgColor] = await Promise.all([pElev, pColor]);
 
-        // Décodage élévation
+        if (!activeTiles.has(key)) return; // Si la tuile a été annulée pendant le fetch
+
+        // Décodage de l'élévation RGB
         const canvas = document.createElement('canvas');
         canvas.width = 256; canvas.height = 256;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(imgElev, 0, 0);
+        ctx.drawImage(imgElev, 0, 0, 256, 256);
         const data = ctx.getImageData(0, 0, 256, 256).data;
 
         const heights = new Float32Array(256 * 256);
         let minH = Infinity;
         for (let i = 0; i < data.length; i += 4) {
-            const h = -10000 + ((data[i] * 65536 + data[i+1] * 256 + data[data[i+2]]) * 0.1);
+            // CORRECTION DE LA FAUTE DE FRAPPE ICI (data[i+2] au lieu de data[data[i+2]])
+            const h = -10000 + ((data[i] * 65536 + data[i+1] * 256 + data[i+2]) * 0.1);
             heights[i/4] = h;
             if (h < minH && h > -9000) minH = h;
         }
 
-        // Texture couleur
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
+        if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
-        // Géométrie
-        const pos = getTilePosition(tx, ty, zoom, originTile);
-        const w = (tileToLng(tx + 1, zoom) - tileToLng(tx, zoom)) * 111320 * Math.cos(tileToLat(ty, zoom) * Math.PI / 180);
-        const h = (tileToLat(ty, zoom) - tileToLat(ty + 1, zoom)) * 111320;
+        // Calcul exact de la taille de la tuile en projection Web Mercator
+        const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
+        
+        // Position relative par rapport à la tuile d'origine (Garantit 0 espaces/vides)
+        const dx = (tx - originTile.x) * tileSizeMeters;
+        const dz = (ty - originTile.y) * tileSizeMeters;
 
-        const geometry = new THREE.PlaneGeometry(w, h, RESOLUTION, RESOLUTION);
+        const geometry = new THREE.PlaneGeometry(tileSizeMeters, tileSizeMeters, RESOLUTION, RESOLUTION);
         geometry.rotateX(-Math.PI / 2);
 
+        // Facteur de correction de l'étirement Mercator pour l'altitude
+        const lat = tileToLat(ty + 0.5, zoom);
+        const heightScale = 1 / Math.cos(lat * Math.PI / 180);
+
         const vertices = geometry.attributes.position.array;
-        for (let i = 0; i < vertices.length; i += 3) {
-            const u = (vertices[i] / w) + 0.5;
-            const v = (vertices[i+2] / h) + 0.5;
-            const px = Math.floor(u * 255);
-            const py = Math.floor(v * 255);
-            vertices[i+1] = heights[py * 256 + px] || 0;
+        
+        // Fonction de lissage bilinéaire pour des pentes parfaites
+        function getElevationBilinear(u, v) {
+            let x = u * 255;
+            let y = v * 255;
+            if (x < 0) x = 0; if (x >= 255) x = 254.999;
+            if (y < 0) y = 0; if (y >= 255) y = 254.999;
+
+            const x0 = Math.floor(x);
+            const y0 = Math.floor(y);
+            const x1 = x0 + 1;
+            const y1 = y0 + 1;
+
+            const wx = x - x0;
+            const wy = y - y0;
+
+            const h00 = heights[y0 * 256 + x0];
+            const h10 = heights[y0 * 256 + x1];
+            const h01 = heights[y1 * 256 + x0];
+            const h11 = heights[y1 * 256 + x1];
+
+            if (h00 < -9000 || h10 < -9000 || h01 < -9000 || h11 < -9000) return h00;
+
+            return h00 * (1 - wx) * (1 - wy) +
+                   h10 * wx * (1 - wy) +
+                   h01 * (1 - wx) * wy +
+                   h11 * wx * wy;
         }
+
+        // Élévation des sommets de la tuile
+        for (let i = 0; i < vertices.length; i += 3) {
+            const u = (vertices[i] / tileSizeMeters) + 0.5;
+            const v = (vertices[i+2] / tileSizeMeters) + 0.5;
+            
+            const h = getElevationBilinear(u, v);
+            vertices[i+1] = (h > -9000 ? h : minH) * heightScale;
+        }
+        
+        // Lissage des ombres
         geometry.computeVertexNormals();
 
-        const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ map: colorTex, roughness: 0.9 }));
-        mesh.position.set(pos.x + w/2, 0, pos.z + h/2);
+        const material = new THREE.MeshStandardMaterial({ 
+            map: colorTex, 
+            roughness: 0.9,
+            metalness: 0.0,
+            flatShading: false 
+        });
+        
+        const mesh = new THREE.Mesh(geometry, material);
+        // On place la tuile exactement à côté de sa voisine
+        mesh.position.set(dx, 0, dz);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
 
         state.scene.add(mesh);
         activeTiles.set(key, mesh);
+
+        const btn = document.getElementById('bgo');
+        if (btn) btn.textContent = "Recharger le relief";
 
     } catch (e) {
         console.error("Erreur chargement tuile", key, e);
@@ -131,7 +169,6 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
     }
 }
 
-// Fonction legacy pour garder la compatibilité avec le bouton de démarrage
 export async function loadTerrain() {
     await updateVisibleTiles();
 }
