@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SunTrail v7 — WebGPU Ray-casting</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link href="./src/style.css" rel="stylesheet">
+</head>
+<body>
+
+<div id="setup-screen">
+    <div class="setup-card">
+        <h1>☀️ SunTrail</h1>
+        <p class="sub">Visualisez le soleil, les ombres du relief et les sentiers en 3D.</p>
+        <div class="fg"><label>Clé API MapTiler</label><input type="text" id="k1" placeholder="ex: a1b2c3d4e5f6g7h8" autocomplete="off" spellcheck="false"><p class="hint">Gratuit sur <a href="https://cloud.maptiler.com/account/keys/" target="_blank">cloud.maptiler.com</a></p></div>
+        <div class="fg"><label>Clé API OpenWeatherMap <span class="opt-tag">optionnel</span></label><input type="text" id="k2" placeholder="ex: 9f8e7d6c5b4a3210" autocomplete="off" spellcheck="false"><p class="hint">Gratuit sur <a href="https://home.openweathermap.org/api_keys" target="_blank">openweathermap.org</a></p></div>
+        <p class="setup-error" id="serr"></p>
+        <button class="btn-go" id="bgo">Lancer SunTrail →</button>
+    </div>
+</div>
+
+<div id="map"></div>
+<div id="sky-overlay"></div>
+<div id="wx-overlay"></div>
+<canvas id="wx-particles"></canvas>
+<div id="wx-badge"></div>
+<div id="night-indicator">🌙 Soleil sous l'horizon</div>
+
+<div id="panel">
+    <div class="ph"><span style="font-size:1.3rem">☀️</span><h2>SunTrail</h2></div>
+
+    <div class="sec" style="padding-bottom:0.75rem">
+        <div style="position:relative">
+            <input type="text" id="geo-input" placeholder="🔍 Rechercher un lieu..." style="width:100%;padding:0.55rem 0.75rem 0.55rem 0.75rem;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:var(--t1);font-family:'DM Sans',sans-serif;font-size:0.85rem;outline:none;" autocomplete="off" spellcheck="false">
+            <div id="geo-results" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:rgba(12,14,20,0.95);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.1);border-radius:8px;max-height:240px;overflow-y:auto;z-index:100;"></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Date & Heure</div>
+        <div class="dtr"><input type="date" id="dp"><button class="bn" id="bnow">Maintenant</button></div>
+        <div class="td" id="tdisp">12:00</div>
+        <div class="sc"><input type="range" class="ts" id="tsl" min="0" max="1439" value="720" step="1"><div class="sll"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span></div></div>
+        <div class="qt">
+            <button class="qb" id="bsr"><span class="ic">🌅</span>Lever</button>
+            <button class="qb" id="bno"><span class="ic">☀️</span>Midi</button>
+            <button class="qb" id="bgh"><span class="ic">🌇</span>Golden</button>
+            <button class="qb" id="bss"><span class="ic">🌆</span>Coucher</button>
+        </div>
+    </div>
+
+    <div class="sec"><div class="sl">Météo actuelle</div><div id="wxc"><div class="wnk">Chargement...</div></div></div>
+
+    <div class="sec">
+        <div class="sl">Ombres portées — Ray-casting <span id="gpu-badge-slot"></span></div>
+        <div class="si" id="shadow-desc">Initialisation GPU...</div>
+        <div class="scs">
+            <button class="ba bs" id="bsh">☀️ Charger le relief & calculer</button>
+            <div class="tr" id="asr" style="display:none"><label>Recalcul au relâchement</label><label class="tg"><input type="checkbox" id="ash" checked><span class="sk"></span></label></div>
+            <div class="tc" id="sor" style="display:none"><label>Opacité</label><input type="range" id="sop" min="0.1" max="1.0" step="0.05" value="0.65"></div>
+            <div class="tc" id="srr"><label>Résolution</label><select id="srs"><option value="256">256px</option><option value="512">512px</option><option value="1024" selected>1024px</option><option value="2048">2048px</option></select></div>
+            <button class="ba bc" id="bsc" style="display:none">Effacer</button>
+            <button class="ba" id="bdbg" style="display:none;background:#665;font-size:0.7rem">🔍 Debug: voir élévation</button>
+            <div id="sst" class="ss"></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Sentiers de randonnée</div>
+        <div class="si">Sentiers OSM dans la zone visible.</div>
+        <button class="ba bt" id="btl">🥾 Charger les sentiers</button>
+        <div class="tr" id="ttr" style="display:none"><label>Afficher</label><label class="tg"><input type="checkbox" id="ttg" checked><span class="sk"></span></label></div>
+        <div id="tst" class="ss"></div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Boussole solaire</div>
+        <div class="cc"><svg class="csvg" viewBox="0 0 200 200" id="csv"></svg></div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Position du soleil</div>
+        <div class="sdg">
+            <div class="sdi"><div class="dl">Azimut</div><div class="dv gd" id="daz">—°</div></div>
+            <div class="sdi"><div class="dl">Élévation</div><div class="dv gd" id="del">—°</div></div>
+            <div class="sdi"><div class="dl">Phase</div><div class="dv bl" id="dph">—</div></div>
+            <div class="sdi"><div class="dl">Durée du jour</div><div class="dv og" id="ddl">—</div></div>
+        </div>
+        <div class="ebc" style="margin-top:0.75rem"><div class="eb" id="ebar" style="width:50%;background:var(--gold)"></div></div>
+        <div class="el" id="elab">Élévation: —°</div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Éphémérides</div>
+        <div class="str">
+            <div class="sti"><div class="sic">🌅</div><div class="stl">Lever</div><div class="stv" id="tsr">—</div></div><div class="std"></div>
+            <div class="sti"><div class="sic">☀️</div><div class="stl">Zénith</div><div class="stv" id="tsn">—</div></div><div class="std"></div>
+            <div class="sti"><div class="sic">🌆</div><div class="stl">Coucher</div><div class="stv" id="tss">—</div></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Relief</div>
+        <div class="tc"><label>Exagération</label><input type="range" id="tex" min="0.5" max="3" step="0.1" value="1.5"></div>
+        <div class="tc"><label>Ombres hillshade</label><input type="range" id="thi" min="0" max="1" step="0.05" value="0.85"></div>
+    </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

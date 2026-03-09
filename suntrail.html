@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SunTrail v7 — WebGPU Ray-casting</title>
+    <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet">
+    <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js" crossorigin="anonymous"></script>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#0c0e14;--panel:rgba(12,14,20,0.88);--border:rgba(255,255,255,0.06);--gold:#f0b429;--orange:#e8590c;--red:#d6336c;--blue:#4dabf7;--gray:#9ca3af;--t1:#e4e4e7;--t2:#8b8d98;--t3:#52525b;--trail:#e03131;}
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--t1);overflow:hidden;height:100vh;width:100vw;}
+        #setup-screen{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:2rem;}
+        .setup-card{max-width:520px;width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:16px;padding:2.5rem;}
+        .setup-card h1{font-size:1.75rem;font-weight:700;margin-bottom:0.25rem;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+        .setup-card .sub{color:var(--t2);font-size:0.95rem;margin-bottom:2rem;line-height:1.5;}
+        .fg{margin-bottom:1.25rem;}.fg label{font-size:0.8rem;font-weight:500;color:var(--t2);text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:0.5rem;}
+        .fg input[type="text"]{width:100%;padding:0.75rem 1rem;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:var(--t1);font-family:'JetBrains Mono',monospace;font-size:0.9rem;outline:none;}
+        .fg input:focus{border-color:var(--gold);}.fg .hint{font-size:0.78rem;color:var(--t3);margin-top:0.4rem;line-height:1.5;}.fg .hint a{color:var(--blue);text-decoration:none;}
+        .opt-tag{font-size:0.65rem;color:var(--t3);background:rgba(255,255,255,0.05);padding:0.15rem 0.4rem;border-radius:4px;margin-left:0.4rem;}
+        .btn-go{display:flex;align-items:center;justify-content:center;width:100%;margin-top:1.5rem;padding:0.8rem;background:linear-gradient(135deg,var(--gold),var(--orange));border:none;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:0.95rem;font-weight:600;color:#0c0e14;}
+        .btn-go:hover{opacity:0.9;}.setup-error{color:var(--red);font-size:0.85rem;margin-top:0.75rem;display:none;}
+        #map{position:absolute;inset:0;width:100%;height:100%;}.maplibregl-ctrl-attrib{font-size:10px!important;}
+        #sky-overlay{position:absolute;inset:0;z-index:1;pointer-events:none;transition:background 0.4s;mix-blend-mode:multiply;}
+        #wx-overlay{position:absolute;inset:0;z-index:2;pointer-events:none;transition:background 1s;}
+        #wx-overlay.fog{background:radial-gradient(ellipse at 50% 120%,rgba(200,205,215,0.45) 0%,transparent 100%);backdrop-filter:blur(1.5px);}
+        #wx-overlay.fog-heavy{background:radial-gradient(ellipse at 50% 120%,rgba(190,195,205,0.6) 0%,transparent 100%);backdrop-filter:blur(3px);}
+        #wx-overlay.overcast{background:linear-gradient(180deg,rgba(120,125,140,0.2) 0%,transparent 100%);}
+        #wx-overlay.rain{background:linear-gradient(180deg,rgba(80,90,120,0.18) 0%,transparent 100%);}
+        #wx-overlay.snow{background:linear-gradient(180deg,rgba(210,215,225,0.2) 0%,transparent 100%);}
+        #wx-overlay.storm{background:linear-gradient(180deg,rgba(40,40,60,0.3) 0%,transparent 100%);}
+        #wx-particles{position:absolute;inset:0;z-index:3;pointer-events:none;}
+        #wx-badge{display:none;position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:10;padding:0.5rem 1rem;background:var(--panel);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:20px;font-size:0.8rem;color:var(--t2);white-space:nowrap;}
+        #night-indicator{display:none;position:absolute;top:16px;right:16px;z-index:10;padding:0.6rem 1rem;background:rgba(26,26,62,0.9);backdrop-filter:blur(12px);border:1px solid rgba(99,102,241,0.2);border-radius:10px;font-size:0.8rem;color:#818cf8;}
+
+        #panel{position:absolute;top:16px;left:16px;width:330px;z-index:10;background:var(--panel);backdrop-filter:blur(24px) saturate(1.2);border:1px solid var(--border);border-radius:16px;padding:1.25rem;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.4);max-height:calc(100vh - 32px);overflow-y:auto;}
+        #panel::-webkit-scrollbar{width:4px;}#panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px;}
+        .ph{display:flex;align-items:center;gap:0.5rem;margin-bottom:1.25rem;}.ph h2{font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+        .sec{margin-bottom:1.25rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border);}.sec:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0;}
+        .sl{font-size:0.7rem;font-weight:500;color:var(--t3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.6rem;}
+        .dtr{display:flex;gap:0.5rem;margin-bottom:0.75rem;}
+        .dtr input[type="date"]{flex:1;padding:0.5rem 0.6rem;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:var(--t1);font-family:'JetBrains Mono',monospace;font-size:0.8rem;outline:none;}
+        .dtr input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(0.7);}
+        .bn{padding:0.5rem 0.75rem;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);border-radius:6px;cursor:pointer;color:var(--gold);font-size:0.75rem;font-family:'DM Sans',sans-serif;font-weight:600;}.bn:hover{background:rgba(255,255,255,0.1);}
+        .td{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:600;text-align:center;margin:0.25rem 0;letter-spacing:-0.02em;}
+        .sc{position:relative;width:100%;padding:0.5rem 0;}
+        .ts{width:100%;height:6px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.08);border-radius:3px;outline:none;cursor:pointer;}
+        .ts::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--gold);border:3px solid var(--bg);box-shadow:0 0 12px rgba(240,180,41,0.4);cursor:grab;}
+        .ts::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--gold);border:3px solid var(--bg);cursor:grab;}
+        .sll{display:flex;justify-content:space-between;font-size:0.65rem;color:var(--t3);font-family:'JetBrains Mono',monospace;margin-top:0.25rem;}
+        .qt{display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.5rem;}
+        .qb{flex:1;min-width:60px;padding:0.4rem 0.5rem;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:6px;cursor:pointer;color:var(--t2);font-size:0.7rem;font-family:'DM Sans',sans-serif;font-weight:500;text-align:center;}.qb:hover{background:rgba(255,255,255,0.08);color:var(--t1);}.qb .ic{font-size:0.85rem;display:block;margin-bottom:0.1rem;}
+        .wc{display:flex;align-items:center;gap:0.75rem;padding:0.75rem;background:rgba(255,255,255,0.03);border-radius:10px;border:1px solid rgba(255,255,255,0.04);}
+        .wi{font-size:2rem;line-height:1;}.wn{flex:1;}.wt{font-family:'JetBrains Mono',monospace;font-size:1.25rem;font-weight:600;}.wd{font-size:0.8rem;color:var(--t2);text-transform:capitalize;}
+        .wds{display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-top:0.6rem;}.wdi{font-size:0.75rem;color:var(--t2);display:flex;align-items:center;gap:0.3rem;}.wdi .wv{font-family:'JetBrains Mono',monospace;color:var(--t1);font-weight:500;}
+        .wnk{font-size:0.8rem;color:var(--t3);text-align:center;padding:0.5rem;line-height:1.5;}.wnk a{color:var(--blue);text-decoration:none;}
+        .cbc{position:relative;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;margin-top:0.5rem;}.cb{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--blue),var(--gray));transition:width 0.5s;}.cl{text-align:center;margin-top:0.25rem;font-size:0.7rem;color:var(--t2);}
+        .sdg{display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;}.sdi{padding:0.6rem;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.04);}.sdi .dl{font-size:0.65rem;color:var(--t3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.2rem;}.sdi .dv{font-family:'JetBrains Mono',monospace;font-size:0.95rem;font-weight:600;}.dv.gd{color:var(--gold);}.dv.bl{color:var(--blue);}.dv.og{color:var(--orange);}
+        .cc{display:flex;justify-content:center;padding:0.5rem 0;}.csvg{width:180px;height:180px;}
+        .str{display:flex;justify-content:space-between;align-items:center;}.sti{text-align:center;}.sti .sic{font-size:1.1rem;}.sti .stl{font-size:0.6rem;color:var(--t3);text-transform:uppercase;letter-spacing:0.05em;}.sti .stv{font-family:'JetBrains Mono',monospace;font-size:0.85rem;font-weight:600;}.std{width:1px;height:30px;background:var(--border);}
+        .ebc{position:relative;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;margin-top:0.5rem;}.eb{height:100%;border-radius:4px;transition:width 0.15s,background 0.15s;}.el{text-align:center;margin-top:0.3rem;font-size:0.75rem;color:var(--t2);}
+        .tc{display:flex;align-items:center;justify-content:space-between;padding:0.4rem 0;}.tc label{font-size:0.8rem;color:var(--t2);}
+        .tc select{padding:0.3rem 0.5rem;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:4px;color:var(--t1);font-family:'DM Sans',sans-serif;font-size:0.75rem;outline:none;cursor:pointer;}.tc select option{background:#1a1c24;}
+        .tc input[type="range"]{width:120px;height:4px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.1);border-radius:2px;outline:none;}
+        .tc input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid var(--bg);cursor:pointer;}
+        .si{font-size:0.75rem;color:var(--t3);margin-bottom:0.6rem;line-height:1.4;}.si code{background:rgba(255,255,255,0.08);padding:0.1rem 0.3rem;border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:0.65rem;}.scs{display:flex;flex-direction:column;gap:0.4rem;}
+        .ba{width:100%;padding:0.55rem;border-radius:8px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:0.8rem;font-weight:600;transition:all 0.2s;}.ba:active{transform:scale(0.98);}.ba:disabled{opacity:0.5;cursor:not-allowed;}
+        .bs{background:linear-gradient(135deg,rgba(240,180,41,0.15),rgba(240,180,41,0.05));border:1px solid rgba(240,180,41,0.3);color:var(--gold);}.bs:hover:not(:disabled){background:linear-gradient(135deg,rgba(240,180,41,0.25),rgba(240,180,41,0.1));}
+        .bt{background:linear-gradient(135deg,rgba(224,49,49,0.15),rgba(224,49,49,0.05));border:1px solid rgba(224,49,49,0.3);color:var(--trail);}.bt:hover:not(:disabled){background:linear-gradient(135deg,rgba(224,49,49,0.25),rgba(224,49,49,0.1));}
+        .bc{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:var(--t2);font-weight:500;}
+        .ss{font-size:0.75rem;color:var(--t2);text-align:center;min-height:1.2em;}.ss.cp{color:var(--gold);}.ss.dn{color:#51cf66;}.ss.er{color:var(--red);}
+        .tr{display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;}.tr label{font-size:0.8rem;color:var(--t2);}
+        .tg{position:relative;width:36px;height:20px;cursor:pointer;}.tg input{opacity:0;width:0;height:0;}.tg .sk{position:absolute;inset:0;background:rgba(255,255,255,0.1);border-radius:10px;transition:0.2s;}.tg .sk:before{content:'';position:absolute;height:14px;width:14px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:0.2s;}.tg input:checked+.sk{background:var(--gold);}.tg input:checked+.sk:before{transform:translateX(16px);}
+
+        .gpu-badge{display:inline-flex;align-items:center;gap:0.3rem;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.7rem;font-weight:600;font-family:'JetBrains Mono',monospace;}
+        .gpu-badge.webgpu{background:rgba(81,207,102,0.15);color:#51cf66;border:1px solid rgba(81,207,102,0.3);}
+        .gpu-badge.cpu{background:rgba(255,193,7,0.15);color:#fcc419;border:1px solid rgba(255,193,7,0.3);}
+        .gpu-info{font-size:0.7rem;color:var(--t3);margin-top:0.3rem;}
+
+        #geo-input:focus{border-color:var(--gold);}
+        #geo-results::-webkit-scrollbar{width:4px;}#geo-results::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px;}
+        @media(max-width:600px){#panel{width:calc(100% - 32px);top:auto;bottom:16px;max-height:50vh;}}
+    </style>
+</head>
+<body>
+
+<div id="setup-screen">
+    <div class="setup-card">
+        <h1>☀️ SunTrail</h1>
+        <p class="sub">Visualisez le soleil, les ombres du relief et les sentiers en 3D.</p>
+        <div class="fg"><label>Clé API MapTiler</label><input type="text" id="k1" placeholder="ex: a1b2c3d4e5f6g7h8" autocomplete="off" spellcheck="false"><p class="hint">Gratuit sur <a href="https://cloud.maptiler.com/account/keys/" target="_blank">cloud.maptiler.com</a></p></div>
+        <div class="fg"><label>Clé API OpenWeatherMap <span class="opt-tag">optionnel</span></label><input type="text" id="k2" placeholder="ex: 9f8e7d6c5b4a3210" autocomplete="off" spellcheck="false"><p class="hint">Gratuit sur <a href="https://home.openweathermap.org/api_keys" target="_blank">openweathermap.org</a></p></div>
+        <p class="setup-error" id="serr"></p>
+        <button class="btn-go" id="bgo">Lancer SunTrail →</button>
+    </div>
+</div>
+
+<div id="map"></div><div id="sky-overlay"></div><div id="wx-overlay"></div><canvas id="wx-particles"></canvas><div id="wx-badge"></div><div id="night-indicator">🌙 Soleil sous l'horizon</div>
+
+<div id="panel">
+    <div class="ph"><span style="font-size:1.3rem">☀️</span><h2>SunTrail</h2></div>
+
+    <div class="sec" style="padding-bottom:0.75rem">
+        <div style="position:relative">
+            <input type="text" id="geo-input" placeholder="🔍 Rechercher un lieu..." style="width:100%;padding:0.55rem 0.75rem 0.55rem 0.75rem;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:var(--t1);font-family:'DM Sans',sans-serif;font-size:0.85rem;outline:none;" autocomplete="off" spellcheck="false">
+            <div id="geo-results" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:rgba(12,14,20,0.95);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.1);border-radius:8px;max-height:240px;overflow-y:auto;z-index:100;"></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Date & Heure</div>
+        <div class="dtr"><input type="date" id="dp"><button class="bn" id="bnow">Maintenant</button></div>
+        <div class="td" id="tdisp">12:00</div>
+        <div class="sc"><input type="range" class="ts" id="tsl" min="0" max="1439" value="720" step="1"><div class="sll"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span></div></div>
+        <div class="qt">
+            <button class="qb" id="bsr"><span class="ic">🌅</span>Lever</button>
+            <button class="qb" id="bno"><span class="ic">☀️</span>Midi</button>
+            <button class="qb" id="bgh"><span class="ic">🌇</span>Golden</button>
+            <button class="qb" id="bss"><span class="ic">🌆</span>Coucher</button>
+        </div>
+    </div>
+
+    <div class="sec"><div class="sl">Météo actuelle</div><div id="wxc"><div class="wnk">Chargement...</div></div></div>
+
+    <div class="sec">
+        <div class="sl">Ombres portées — Ray-casting <span id="gpu-badge-slot"></span></div>
+        <div class="si" id="shadow-desc">Initialisation GPU...</div>
+        <div class="scs">
+            <button class="ba bs" id="bsh">☀️ Charger le relief & calculer</button>
+            <div class="tr" id="asr" style="display:none"><label>Recalcul au relâchement</label><label class="tg"><input type="checkbox" id="ash" checked><span class="sk"></span></label></div>
+            <div class="tc" id="sor" style="display:none"><label>Opacité</label><input type="range" id="sop" min="0.1" max="1.0" step="0.05" value="0.65"></div>
+            <div class="tc" id="srr"><label>Résolution</label><select id="srs"><option value="256">256px</option><option value="512">512px</option><option value="1024" selected>1024px</option><option value="2048">2048px</option></select></div>
+            <button class="ba bc" id="bsc" style="display:none">Effacer</button>
+            <button class="ba" id="bdbg" style="display:none;background:#665;font-size:0.7rem">🔍 Debug: voir élévation</button>
+            <div id="sst" class="ss"></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Sentiers de randonnée</div>
+        <div class="si">Sentiers OSM dans la zone visible.</div>
+        <button class="ba bt" id="btl">🥾 Charger les sentiers</button>
+        <div class="tr" id="ttr" style="display:none"><label>Afficher</label><label class="tg"><input type="checkbox" id="ttg" checked><span class="sk"></span></label></div>
+        <div id="tst" class="ss"></div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Boussole solaire</div>
+        <div class="cc"><svg class="csvg" viewBox="0 0 200 200" id="csv"></svg></div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Position du soleil</div>
+        <div class="sdg">
+            <div class="sdi"><div class="dl">Azimut</div><div class="dv gd" id="daz">—°</div></div>
+            <div class="sdi"><div class="dl">Élévation</div><div class="dv gd" id="del">—°</div></div>
+            <div class="sdi"><div class="dl">Phase</div><div class="dv bl" id="dph">—</div></div>
+            <div class="sdi"><div class="dl">Durée du jour</div><div class="dv og" id="ddl">—</div></div>
+        </div>
+        <div class="ebc" style="margin-top:0.75rem"><div class="eb" id="ebar" style="width:50%;background:var(--gold)"></div></div>
+        <div class="el" id="elab">Élévation: —°</div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Éphémérides</div>
+        <div class="str">
+            <div class="sti"><div class="sic">🌅</div><div class="stl">Lever</div><div class="stv" id="tsr">—</div></div><div class="std"></div>
+            <div class="sti"><div class="sic">☀️</div><div class="stl">Zénith</div><div class="stv" id="tsn">—</div></div><div class="std"></div>
+            <div class="sti"><div class="sic">🌆</div><div class="stl">Coucher</div><div class="stv" id="tss">—</div></div>
+        </div>
+    </div>
+
+    <div class="sec">
+        <div class="sl">Relief</div>
+        <div class="tc"><label>Exagération</label><input type="range" id="tex" min="0.5" max="3" step="0.1" value="1.5"></div>
+        <div class="tc"><label>Ombres hillshade</label><input type="range" id="thi" min="0" max="1" step="0.05" value="0.85"></div>
+    </div>
+</div>
+
+<script>
+window.addEventListener('load', async function() {
+
+if (typeof maplibregl==='undefined'){document.getElementById('serr').textContent='MapLibre non chargé.';document.getElementById('serr').style.display='block';return;}
+
+// ─── CONFIG ───
+const SWISS=[7.45,46.75],SUN_R=5000;
+let map,MK='',WK='',curDate=new Date(),sunTimes={},weatherData=null,wxTimer=null;
+let pathCK='',pathCD=null,compCK='',compCD=null;
+let cachedGrid=null,cachedBounds=null,cachedViewport=null,cachedGS=0,cachedElevRange=null;
+let cpuWorker=null,shadowPending=false;
+
+// ─── WEBGPU INIT ───
+let gpuDevice=null,gpuAvailable=false,gpuName='';
+
+async function initWebGPU(){
+    try{
+        if(!navigator.gpu) throw new Error('API navigator.gpu absente — activez WebGPU dans les flags du navigateur');
+        const adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
+        if(!adapter) throw new Error('requestAdapter() a retourné null — GPU non compatible ou WebGPU désactivé');
+
+        // Simple device request without strict limits
+        gpuDevice=await adapter.requestDevice();
+
+        // Try to get GPU name (may fail on some browsers)
+        try{
+            const info=await adapter.requestAdapterInfo();
+            gpuName=info.device||info.description||info.vendor||'GPU détecté';
+        }catch(e){
+            gpuName='GPU (info non disponible)';
+        }
+
+        // Quick test: create a small buffer to verify GPU works
+        const testBuf=gpuDevice.createBuffer({size:16,usage:GPUBufferUsage.STORAGE});
+        testBuf.destroy();
+
+        gpuAvailable=true;
+        document.getElementById('gpu-badge-slot').innerHTML=`<span class="gpu-badge webgpu">⚡ WebGPU</span>`;
+        document.getElementById('shadow-desc').textContent=`GPU: ${gpuName}. Ray-casting accéléré.`;
+        document.getElementById('srs').value='1024';
+    }catch(e){
+        gpuAvailable=false;
+        const reason=e.message||'Erreur inconnue';
+        console.warn('WebGPU init failed:',reason);
+        document.getElementById('gpu-badge-slot').innerHTML=`<span class="gpu-badge cpu">🖥️ CPU</span>`;
+        document.getElementById('shadow-desc').innerHTML=`WebGPU indisponible: ${reason}<br><span style="font-size:0.65rem;color:var(--t3)">Chrome/Edge: <code>chrome://flags/#enable-unsafe-webgpu</code> → Enabled<br>Brave: <code>brave://flags/#enable-unsafe-webgpu</code> → Enabled + désactiver Shields</span>`;
+        document.getElementById('srs').value='512';
+        const opt2k=document.querySelector('#srs option[value="2048"]');
+        if(opt2k)opt2k.disabled=true;
+    }
+}
+await initWebGPU();
+
+// ─── WGSL COMPUTE SHADER — Cast shadows + steep-slope self-shadowing ───
+const SHADOW_WGSL=`
+struct Params { gridSize: u32, sunAzDeg: f32, sunAltDeg: f32, metersPerCellX: f32, metersPerCellY: f32, maxSteps: u32, }
+@group(0) @binding(0) var<storage,read> elevGrid: array<f32>;
+@group(0) @binding(1) var<storage,read_write> shadowMap: array<u32>;
+@group(0) @binding(2) var<uniform> params: Params;
+fn sampleBilinear(fx: f32, fy: f32, gs: u32) -> f32 {
+    let x0=u32(max(0.0,floor(fx)));let y0=u32(max(0.0,floor(fy)));
+    let x1=min(x0+1u,gs-1u);let y1=min(y0+1u,gs-1u);
+    let wx=fx-floor(fx);let wy=fy-floor(fy);
+    let e00=elevGrid[y0*gs+x0];let e10=elevGrid[y0*gs+x1];
+    let e01=elevGrid[y1*gs+x0];let e11=elevGrid[y1*gs+x1];
+    if(e00< -9000.0||e10< -9000.0||e01< -9000.0||e11< -9000.0){return elevGrid[u32(round(fy))*gs+u32(round(fx))];}
+    return e00*(1.0-wx)*(1.0-wy)+e10*wx*(1.0-wy)+e01*(1.0-wx)*wy+e11*wx*wy;
+}
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx=gid.x;let gs=params.gridSize;if(idx>=gs*gs){return;}
+    let y=idx/gs;let x=idx%gs;let baseElev=elevGrid[idx];
+    if(baseElev< -9000.0){shadowMap[idx]=0u;return;}
+    let PI:f32=3.14159265;let sunAzRad=params.sunAzDeg*PI/180.0;let sunAltRad=params.sunAltDeg*PI/180.0;
+    let sunRadius:f32=0.00465;
+    let rawDx=sin(sunAzRad)/params.metersPerCellX;let rawDy=-cos(sunAzRad)/params.metersPerCellY;
+    let mc=max(abs(rawDx),abs(rawDy));let dx=rawDx/mc;let dy=rawDy/mc;
+    let stepDist=sqrt((dx*params.metersPerCellX)*(dx*params.metersPerCellX)+(dy*params.metersPerCellY)*(dy*params.metersPerCellY));
+    let effectiveR:f32=7433000.0;
+    var maxHA:f32=-1.5708;let sunTop=sunAltRad+sunRadius;
+    for(var s:u32=1u;s<=params.maxSteps;s=s+1u){
+        let sf=f32(s);let fx=f32(x)+dx*sf;let fy=f32(y)+dy*sf;
+        if(fx<0.0||fx>=f32(gs)-1.0||fy<0.0||fy>=f32(gs)-1.0){break;}
+        let se=sampleBilinear(fx,fy,gs);if(se< -9000.0){continue;}
+        let dist=sf*stepDist;let cd=(dist*dist)/(2.0*effectiveR);
+        let angle=atan2(se-cd-baseElev,dist);
+        if(angle>maxHA){maxHA=angle;}if(maxHA>sunTop+0.02){break;}
+    }
+    let sunBot=sunAltRad-sunRadius;var val:f32=0.0;
+    if(maxHA>=sunTop){val=1.0;}else if(maxHA>sunBot){val=(maxHA-sunBot)/(sunTop-sunBot);}
+    shadowMap[idx]=u32(round(val*255.0));
+}`;
+
+async function gpuCastShadows(elevGrid,gridSize,sunAz,sunAlt,mpcX,mpcY){
+    const totalPixels=gridSize*gridSize;
+    // Normalized step: advance ~1 cell per step along dominant axis
+    // Grid skew fix: divide by cell size to convert physical direction to grid direction
+    const rawDx=Math.sin(sunAz*Math.PI/180)/mpcX,rawDy=-Math.cos(sunAz*Math.PI/180)/mpcY;
+    const maxComp=Math.max(Math.abs(rawDx),Math.abs(rawDy));
+    const ndx=rawDx/maxComp,ndy=rawDy/maxComp;
+    const stepDist=Math.sqrt((ndx*mpcX)**2+(ndy*mpcY)**2);
+    const maxSteps=Math.min(Math.ceil(50000/stepDist),gridSize*2);
+
+    // Buffers
+    const elevBuf=gpuDevice.createBuffer({size:totalPixels*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+    gpuDevice.queue.writeBuffer(elevBuf,0,elevGrid);
+
+    const shadowBuf=gpuDevice.createBuffer({size:totalPixels*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC});
+    const readBuf=gpuDevice.createBuffer({size:totalPixels*4,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+
+    const paramsData=new ArrayBuffer(24);
+    new Uint32Array(paramsData,0,1)[0]=gridSize;
+    new Float32Array(paramsData,4,1)[0]=sunAz;
+    new Float32Array(paramsData,8,1)[0]=sunAlt;
+    new Float32Array(paramsData,12,1)[0]=mpcX;
+    new Float32Array(paramsData,16,1)[0]=mpcY;
+    new Uint32Array(paramsData,20,1)[0]=maxSteps;
+    const paramBuf=gpuDevice.createBuffer({size:24,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+    gpuDevice.queue.writeBuffer(paramBuf,0,paramsData);
+
+    const module=gpuDevice.createShaderModule({code:SHADOW_WGSL});
+    const pipeline=gpuDevice.createComputePipeline({layout:'auto',compute:{module,entryPoint:'main'}});
+    const bindGroup=gpuDevice.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+        {binding:0,resource:{buffer:elevBuf}},
+        {binding:1,resource:{buffer:shadowBuf}},
+        {binding:2,resource:{buffer:paramBuf}}
+    ]});
+
+    const wgSize=256;
+    const numWG=Math.ceil(totalPixels/wgSize);
+    const encoder=gpuDevice.createCommandEncoder();
+    const pass=encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0,bindGroup);
+    pass.dispatchWorkgroups(numWG);
+    pass.end();
+    encoder.copyBufferToBuffer(shadowBuf,0,readBuf,0,totalPixels*4);
+    gpuDevice.queue.submit([encoder.finish()]);
+
+    await readBuf.mapAsync(GPUMapMode.READ);
+    const result=new Uint32Array(readBuf.getMappedRange().slice(0));
+    readBuf.unmap();
+    elevBuf.destroy(); shadowBuf.destroy(); readBuf.destroy(); paramBuf.destroy();
+
+    // Convert to Uint8Array intensity map (0=sun, 255=full shadow)
+    const intensity=new Uint8Array(totalPixels);
+    for(let i=0;i<totalPixels;i++) intensity[i]=Math.min(255,result[i]);
+    return intensity;
+}
+
+// ─── CPU FALLBACK WORKER — Cast shadows only ───
+function createCpuWorker(){
+    const code=`self.onmessage=function(e){
+    const{elevGrid,gridSize,sunAzDeg,sunAltDeg,metersPerCellX,metersPerCellY}=e.data;
+    const intensity=new Uint8Array(gridSize*gridSize);
+    const PI=Math.PI,sunAzRad=sunAzDeg*PI/180,sunAltRad=sunAltDeg*PI/180;
+    const sunRadius=0.00465;
+    const rawDx=Math.sin(sunAzRad)/metersPerCellX,rawDy=-Math.cos(sunAzRad)/metersPerCellY;
+    const mc=Math.max(Math.abs(rawDx),Math.abs(rawDy));
+    const dx=rawDx/mc,dy=rawDy/mc;
+    const stepDist=Math.sqrt((dx*metersPerCellX)**2+(dy*metersPerCellY)**2);
+    const maxSteps=Math.min(Math.ceil(50000/stepDist),gridSize*2)|0;
+    const effectiveR=7433000;
+    const sunTop=sunAltRad+sunRadius,sunBot=sunAltRad-sunRadius,sunDiam=sunTop-sunBot;
+    const gs=gridSize;
+    function samp(fx,fy){
+        const x0=Math.max(0,Math.floor(fx)),y0=Math.max(0,Math.floor(fy));
+        const x1=Math.min(x0+1,gs-1),y1=Math.min(y0+1,gs-1);
+        const e00=elevGrid[y0*gs+x0],e10=elevGrid[y0*gs+x1];
+        const e01=elevGrid[y1*gs+x0],e11=elevGrid[y1*gs+x1];
+        if(e00<-9000||e10<-9000||e01<-9000||e11<-9000)return elevGrid[Math.round(fy)*gs+Math.round(fx)];
+        const wx=fx-Math.floor(fx),wy=fy-Math.floor(fy);
+        return e00*(1-wx)*(1-wy)+e10*wx*(1-wy)+e01*(1-wx)*wy+e11*wx*wy;
+    }
+    for(let y=0;y<gs;y++){for(let x=0;x<gs;x++){
+        const idx=y*gs+x,base=elevGrid[idx];
+        if(base<-9000){intensity[idx]=0;continue;}
+        let maxAngle=-1.5708;
+        for(let s=1;s<=maxSteps;s++){
+            const fx=x+dx*s,fy=y+dy*s;
+            if(fx<0||fx>=gs-1||fy<0||fy>=gs-1)break;
+            const se=samp(fx,fy);if(se<-9000)continue;
+            const d=s*stepDist,curv=d*d/(2*effectiveR);
+            const angle=Math.atan2(se-curv-base,d);
+            if(angle>maxAngle)maxAngle=angle;
+            if(maxAngle>sunTop+0.02)break;
+        }
+        let val=0;
+        if(maxAngle>=sunTop)val=255;
+        else if(maxAngle>sunBot)val=Math.round(((maxAngle-sunBot)/sunDiam)*255);
+        intensity[idx]=val;}}
+    self.postMessage({intensity},[intensity.buffer]);};`;
+    return new Worker(URL.createObjectURL(new Blob([code],{type:'application/javascript'})));
+}
+
+function throttle(fn,ms){let last=0,t=null;return(...a)=>{const now=Date.now();clearTimeout(t);if(now-last>=ms){last=now;fn(...a);}else{t=setTimeout(()=>{last=Date.now();fn(...a);},ms-(now-last));}}}
+
+// ─── SETUP ───
+const s1=localStorage.getItem('maptiler_key'),s2=localStorage.getItem('owm_key');
+if(s1)document.getElementById('k1').value=s1; if(s2)document.getElementById('k2').value=s2;
+document.getElementById('bgo').addEventListener('click',go);
+document.getElementById('k1').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+
+function go(){
+    MK=document.getElementById('k1').value.trim(); WK=document.getElementById('k2').value.trim();
+    if(!MK||MK.length<5){const e=document.getElementById('serr');e.textContent='Clé MapTiler invalide.';e.style.display='block';return;}
+    localStorage.setItem('maptiler_key',MK); if(WK)localStorage.setItem('owm_key',WK);
+    document.getElementById('setup-screen').style.display='none'; initMap();
+}
+
+// ─── MAP ───
+function initMap(){
+    map=new maplibregl.Map({container:'map',style:`https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MK}`,center:SWISS,zoom:10,pitch:55,bearing:-15,maxPitch:75,antialias:true});
+    map.addControl(new maplibregl.NavigationControl({visualizePitch:true}),'top-right');
+    map.addControl(new maplibregl.ScaleControl({unit:'metric'}),'bottom-right');
+    map.on('load',()=>{
+        const ts=findDEM();
+        if(ts)map.setTerrain({source:ts,exaggeration:1.5});
+        else{map.addSource('t-dem',{type:'raster-dem',url:`https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${MK}`,tileSize:256});map.setTerrain({source:'t-dem',exaggeration:1.5});}
+        map.addSource('sun-dir',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        map.addLayer({id:'sun-path',type:'line',source:'sun-dir',filter:['==',['get','t'],'path'],paint:{'line-color':'#f0b429','line-width':1.5,'line-opacity':0.35,'line-dasharray':[4,4]}});
+        map.addLayer({id:'sun-rs',type:'line',source:'sun-dir',filter:['in',['get','t'],['literal',['sr','ss']]],paint:{'line-color':['case',['==',['get','t'],'sr'],'#ff922b','#e8590c'],'line-width':2,'line-opacity':0.6,'line-dasharray':[2,3]}});
+        map.addLayer({id:'sun-cur',type:'line',source:'sun-dir',filter:['==',['get','t'],'cur'],paint:{'line-color':'#f0b429','line-width':3,'line-opacity':0.85}});
+        map.addLayer({id:'sun-hm',type:'circle',source:'sun-dir',filter:['==',['get','t'],'hm'],paint:{'circle-radius':4,'circle-color':'rgba(240,180,41,0.5)','circle-stroke-width':1,'circle-stroke-color':'rgba(240,180,41,0.8)'}});
+        map.addLayer({id:'sun-hl',type:'symbol',source:'sun-dir',filter:['==',['get','t'],'hm'],layout:{'text-field':['get','l'],'text-size':11,'text-offset':[0,-1.2],'text-font':['Open Sans Bold']},paint:{'text-color':'rgba(240,180,41,0.9)','text-halo-color':'rgba(0,0,0,0.7)','text-halo-width':1.5}});
+        map.addLayer({id:'sun-dot',type:'circle',source:'sun-dir',filter:['==',['get','t'],'sun'],paint:{'circle-radius':10,'circle-color':'#f0b429','circle-stroke-width':3,'circle-stroke-color':'#fff','circle-opacity':0.9}});
+        document.getElementById('panel').style.display='block';
+        initCtrl();updateSun();fetchWx();
+        const onMv=throttle(()=>{pathCK='';compCK='';cachedGrid=null;updateOverlay();fetchWx();},300);
+        map.on('moveend',onMv);
+        // Click on map to check elevation from grid
+        map.on('click',e=>{
+            const lat=e.lngLat.lat,lon=e.lngLat.lng;
+            // Always show direct MapLibre terrain elevation
+            const directElev=map.queryTerrainElevation?.(e.lngLat);
+            const directStr=directElev!==null&&directElev!==undefined?directElev.toFixed(1)+'m':'N/A';
+            
+            let gridStr='(pas de grille)';
+            if(cachedGrid&&cachedBounds){
+                const b=cachedBounds,gs=cachedGS;
+                const gx=Math.round((lon-b.west)/(b.east-b.west)*gs);
+                const gy=Math.round((b.north-lat)/(b.north-b.south)*gs);
+                if(gx>=0&&gx<gs&&gy>=0&&gy<gs){
+                    const elev=cachedGrid[gy*gs+gx];
+                    gridStr=elev<-9000?'MANQUANT':elev.toFixed(1)+'m';
+                }
+            }
+            console.log(`📍 ${lat.toFixed(5)}, ${lon.toFixed(5)} → direct=${directStr}, grille=${gridStr}`);
+            new maplibregl.Popup({closeOnClick:true,maxWidth:'280px'})
+                .setLngLat(e.lngLat)
+                .setHTML(`<div style="font-size:12px;font-family:monospace;padding:2px">
+                    <b>📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}</b><br>
+                    ⛰️ MapLibre terrain: <b>${directStr}</b><br>
+                    📐 Grille ombres: <b>${gridStr}</b>
+                </div>`)
+                .addTo(map);
+        });
+    });
+    map.on('error',e=>{if(e.error&&e.error.status===403){document.getElementById('setup-screen').style.display='flex';const err=document.getElementById('serr');err.textContent='⚠️ Clé MapTiler invalide ou expirée. Vérifiez votre clé.';err.style.display='block';}});
+}
+function findDEM(){for(const[i,s]of Object.entries(map.getStyle().sources)){if(s.type==='raster-dem')return i;}return null;}
+
+// ─── CONTROLS ───
+function initCtrl(){
+    const dp=document.getElementById('dp'),ts=document.getElementById('tsl');
+    dp.value=fmtISO(curDate);ts.value=curDate.getHours()*60+curDate.getMinutes();
+    dp.addEventListener('input',()=>{const p=dp.value.split('-');curDate.setFullYear(+p[0],+p[1]-1,+p[2]);pathCK='';compCK='';updateSun();});
+    const tSl=throttle(()=>{const m=parseInt(ts.value);curDate.setHours(Math.floor(m/60),m%60,0,0);updateSun();},33);
+    ts.addEventListener('input',tSl);
+    ts.addEventListener('change',()=>{autoShadow();});
+    document.getElementById('bnow').addEventListener('click',()=>{curDate=new Date();dp.value=fmtISO(curDate);ts.value=curDate.getHours()*60+curDate.getMinutes();pathCK='';compCK='';updateSun();autoShadow();});
+    const jmp=d=>{if(!d)return;curDate.setHours(d.getHours(),d.getMinutes(),0,0);ts.value=d.getHours()*60+d.getMinutes();updateSun();autoShadow();};
+    document.getElementById('bsr').addEventListener('click',()=>jmp(sunTimes.sunrise));
+    document.getElementById('bno').addEventListener('click',()=>jmp(sunTimes.solarNoon));
+    document.getElementById('bgh').addEventListener('click',()=>jmp(sunTimes.goldenHour));
+    document.getElementById('bss').addEventListener('click',()=>jmp(sunTimes.sunset));
+    document.getElementById('tex').addEventListener('input',e=>{map.setTerrain({source:findDEM()||'t-dem',exaggeration:parseFloat(e.target.value)});});
+    document.getElementById('thi').addEventListener('input',()=>setHS());
+    document.getElementById('bsh').addEventListener('click',loadAndCompute);
+    document.getElementById('bsc').addEventListener('click',clearShadows);
+    document.getElementById('bdbg').addEventListener('click',showElevDebug);
+    document.getElementById('sop').addEventListener('input',()=>{if(map.getLayer('sh-ov'))map.setPaintProperty('sh-ov','raster-opacity',parseFloat(document.getElementById('sop').value));});
+    document.getElementById('btl').addEventListener('click',loadTrails);
+    document.getElementById('ttg').addEventListener('change',e=>{['hiking-trails','hiking-trails-glow'].forEach(l=>{if(map.getLayer(l))map.setLayoutProperty(l,'visibility',e.target.checked?'visible':'none');});});
+    
+    // ─── GEOCODING SEARCH ───
+    const geoInput=document.getElementById('geo-input');
+    const geoResults=document.getElementById('geo-results');
+    let geoTimer=null;
+    geoInput.addEventListener('input',()=>{
+        clearTimeout(geoTimer);
+        const q=geoInput.value.trim();
+        if(q.length<2){geoResults.style.display='none';return;}
+        geoTimer=setTimeout(async()=>{
+            try{
+                const c=map.getCenter();
+                const r=await fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q)}.json?key=${MK}&language=fr&proximity=${c.lng},${c.lat}&limit=6`);
+                if(!r.ok)return;
+                const data=await r.json();
+                if(!data.features||!data.features.length){geoResults.style.display='none';return;}
+                geoResults.innerHTML='';
+                data.features.forEach(f=>{
+                    const item=document.createElement('div');
+                    item.style.cssText='padding:0.6rem 0.75rem;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.05);font-size:0.8rem;transition:background 0.15s;';
+                    const name=f.text||f.place_name||'';
+                    const ctx=f.place_name?f.place_name.replace(name+', ',''):'';
+                    item.innerHTML=`<div style="color:var(--t1);font-weight:500">${name}</div>${ctx?`<div style="color:var(--t3);font-size:0.7rem;margin-top:0.15rem">${ctx}</div>`:''}`;
+                    item.addEventListener('mouseenter',()=>item.style.background='rgba(255,255,255,0.06)');
+                    item.addEventListener('mouseleave',()=>item.style.background='none');
+                    item.addEventListener('click',()=>{
+                        const [lng,lat]=f.center||f.geometry?.coordinates||[];
+                        if(lng&&lat){
+                            // Clear cached grid when moving to new location
+                            cachedGrid=null;cachedBounds=null;cachedViewport=null;cachedElevRange=null;
+                            clearShadowLayer();clearDebugLayer();
+                            map.flyTo({center:[lng,lat],zoom:Math.max(map.getZoom(),12),duration:2000});
+                            geoInput.value=name;
+                            geoResults.style.display='none';
+                        }
+                    });
+                    geoResults.appendChild(item);
+                });
+                geoResults.style.display='block';
+            }catch(e){console.warn('Geocoding error:',e);}
+        },300);
+    });
+    geoInput.addEventListener('keydown',e=>{
+        if(e.key==='Escape'){geoResults.style.display='none';geoInput.blur();}
+        if(e.key==='Enter'){
+            const first=geoResults.querySelector('div');
+            if(first)first.click();
+        }
+    });
+    document.addEventListener('click',e=>{if(!geoInput.contains(e.target)&&!geoResults.contains(e.target))geoResults.style.display='none';});
+}
+function autoShadow(){if(!cachedGrid||!document.getElementById('ash').checked)return;const c=map.getCenter(),sp=SunCalc.getPosition(curDate,c.lat,c.lng);if(sp.altitude*180/Math.PI<0){clearShadowLayer();document.getElementById('sst').textContent='🌙 Nuit';return;}recompute();}
+
+// ─── WEATHER ───
+function fetchWx(){if(!WK){document.getElementById('wxc').innerHTML='<div class="wnk">Ajoutez une clé <a href="https://home.openweathermap.org/api_keys" target="_blank">OWM</a> pour la météo.</div>';weatherData=null;clearWxFx();return;}
+clearTimeout(wxTimer);wxTimer=setTimeout(async()=>{const c=map.getCenter();try{const r=await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}&units=metric&lang=fr&appid=${WK}`);if(!r.ok)throw new Error(r.status);weatherData=await r.json();renderWx();}catch(e){document.getElementById('wxc').innerHTML=`<div class="wnk">Erreur météo (${e.message}).</div>`;}},600);}
+function renderWx(){if(!weatherData)return;const w=weatherData,cl=w.clouds?.all??0,tp=Math.round(w.main?.temp??0),fl=Math.round(w.main?.feels_like??0),hm=w.main?.humidity??0,wn=w.wind?.speed?(w.wind.speed*3.6).toFixed(0):'—',ds=w.weather?.[0]?.description??'',ic=wxEm(w.weather?.[0]?.id,w.weather?.[0]?.icon),vs=w.visibility?(w.visibility/1000).toFixed(0):'—';
+document.getElementById('wxc').innerHTML=`<div class="wc"><div class="wi">${ic}</div><div class="wn"><div class="wt">${tp}°C</div><div class="wd">${ds}</div></div></div><div class="wds"><div class="wdi">🌡️ Ressenti <span class="wv">${fl}°C</span></div><div class="wdi">💧 Humidité <span class="wv">${hm}%</span></div><div class="wdi">💨 Vent <span class="wv">${wn} km/h</span></div><div class="wdi">👁️ Visibilité <span class="wv">${vs} km</span></div></div><div class="cbc"><div class="cb" style="width:${cl}%"></div></div><div class="cl">☁️ Nuages: ${cl}%</div>`;
+applyWxFx();setLighting();}
+function wxEm(c,i){if(!c)return'🌡️';const n=i?.endsWith('n');if(c>=200&&c<300)return'⛈️';if(c>=300&&c<600)return'🌧️';if(c>=600&&c<700)return'🌨️';if(c>=700&&c<800)return'🌫️';if(c===800)return n?'🌙':'☀️';if(c===801)return n?'🌙':'🌤️';if(c===802)return'⛅';if(c>=803)return'☁️';return'🌡️';}
+
+// ─── WX FX ───
+let pAnim=null;const wxCv=document.getElementById('wx-particles'),wxCx=wxCv.getContext('2d');let pts=[];
+function rsCv(){wxCv.width=innerWidth;wxCv.height=innerHeight;}addEventListener('resize',rsCv);rsCv();
+function applyWxFx(){if(!weatherData){clearWxFx();return;}const cd=weatherData.weather?.[0]?.id??800,cl=weatherData.clouds?.all??0,ov=document.getElementById('wx-overlay'),bg=document.getElementById('wx-badge'),ml=document.getElementById('map');ov.className='';bg.style.display='none';ml.style.filter='';cancelAnimationFrame(pAnim);pts=[];
+if(cd>=700&&cd<800){ov.className=weatherData.visibility<1000?'fog-heavy':'fog';ml.style.filter=weatherData.visibility<1000?'saturate(0.4) brightness(0.85)':'saturate(0.6) brightness(0.9)';showBg(weatherData.visibility<1000?'🌫️ Brouillard épais':'🌫️ Brume');}
+else if(cd>=200&&cd<300){ov.className='storm';ml.style.filter='saturate(0.35) brightness(0.7)';initPt('rain',250);showBg('⛈️ Orage');}
+else if(cd>=300&&cd<600){const h=cd>=502;ov.className='rain';ml.style.filter=h?'saturate(0.4) brightness(0.75)':'saturate(0.55) brightness(0.85)';initPt('rain',h?200:120);showBg(h?'🌧️ Pluie forte':'🌧️ Pluie');}
+else if(cd>=600&&cd<700){ov.className='snow';ml.style.filter='saturate(0.4) brightness(1.0)';initPt('snow',100);showBg('🌨️ Neige');}
+else if(cd>=803){ov.className='overcast';ml.style.filter=`saturate(${0.9-cl/100*0.4}) brightness(${1-cl/100*0.15})`;showBg(`☁️ Couvert (${cl}%)`);}
+else if(cd>=801){ml.style.filter=`saturate(${0.95-cl/100*0.2})`;}}
+function clearWxFx(){document.getElementById('wx-overlay').className='';document.getElementById('wx-badge').style.display='none';document.getElementById('map').style.filter='';cancelAnimationFrame(pAnim);pts=[];wxCx.clearRect(0,0,wxCv.width,wxCv.height);}
+function showBg(t){const b=document.getElementById('wx-badge');b.textContent=t;b.style.display='block';}
+function initPt(type,n){pts=[];for(let i=0;i<n;i++){type==='rain'?pts.push({x:Math.random()*wxCv.width,y:Math.random()*wxCv.height,l:12+Math.random()*18,sp:8+Math.random()*12,dr:-1.5-Math.random()*2,op:0.15+Math.random()*0.25,t:'r'}):pts.push({x:Math.random()*wxCv.width,y:Math.random()*wxCv.height,r:1.5+Math.random()*3,sp:0.5+Math.random()*1.5,dr:Math.sin(Math.random()*6.28)*0.8,w:Math.random()*6.28,ws:0.01+Math.random()*0.02,op:0.3+Math.random()*0.5,t:'s'});}animPt();}
+function animPt(){wxCx.clearRect(0,0,wxCv.width,wxCv.height);const w=wxCv.width,h=wxCv.height;for(const p of pts){if(p.t==='r'){p.y+=p.sp;p.x+=p.dr;if(p.y>h){p.y=-p.l;p.x=Math.random()*w;}wxCx.beginPath();wxCx.moveTo(p.x,p.y);wxCx.lineTo(p.x+p.dr*0.6,p.y+p.l);wxCx.strokeStyle=`rgba(170,185,210,${p.op})`;wxCx.lineWidth=1;wxCx.stroke();}else{p.w+=p.ws;p.y+=p.sp;p.x+=p.dr+Math.sin(p.w)*0.5;if(p.y>h){p.y=-p.r*2;p.x=Math.random()*w;}if(p.x<0)p.x=w;if(p.x>w)p.x=0;wxCx.beginPath();wxCx.arc(p.x,p.y,p.r,0,6.28);wxCx.fillStyle=`rgba(230,235,245,${p.op})`;wxCx.fill();}}if(pts.length)pAnim=requestAnimationFrame(animPt);}
+
+// ─── SUN ───
+function updateSun(){const c=map.getCenter(),sp=SunCalc.getPosition(curDate,c.lat,c.lng),az=((sp.azimuth*180/Math.PI)+180)%360,alt=sp.altitude*180/Math.PI;sunTimes=SunCalc.getTimes(curDate,c.lat,c.lng);
+document.getElementById('tdisp').textContent=`${String(curDate.getHours()).padStart(2,'0')}:${String(curDate.getMinutes()).padStart(2,'0')}`;
+document.getElementById('daz').textContent=`${az.toFixed(1)}°`;document.getElementById('del').textContent=`${alt.toFixed(1)}°`;document.getElementById('dph').textContent=sunPh(alt);
+if(sunTimes.sunrise&&sunTimes.sunset){const d=sunTimes.sunset-sunTimes.sunrise;document.getElementById('ddl').textContent=`${Math.floor(d/3600000)}h${String(Math.floor((d%3600000)/60000)).padStart(2,'0')}`;}
+const n=Math.max(0,Math.min(1,(alt+10)/80)),bar=document.getElementById('ebar');bar.style.width=`${n*100}%`;bar.style.background=alt<0?'linear-gradient(90deg,#312e81,#4338ca)':alt<6?'linear-gradient(90deg,#e8590c,#f0b429)':alt<20?'linear-gradient(90deg,#f0b429,#fcc419)':'linear-gradient(90deg,#fcc419,#fff3bf)';
+document.getElementById('elab').textContent=alt<0?`Sous l'horizon (${alt.toFixed(1)}°)`:`Élévation: ${alt.toFixed(1)}°`;
+document.getElementById('tsr').textContent=sunTimes.sunrise?fmtT(sunTimes.sunrise):'—';document.getElementById('tsn').textContent=sunTimes.solarNoon?fmtT(sunTimes.solarNoon):'—';document.getElementById('tss').textContent=sunTimes.sunset?fmtT(sunTimes.sunset):'—';
+updateComp(az,alt);setHS(az);setLighting(az,alt);updateOverlay();updateSky(alt);document.getElementById('night-indicator').style.display=alt<-0.83?'block':'none';}
+function sunPh(a){if(a<-18)return'🌑 Nuit';if(a<-12)return'🌌 Astro.';if(a<-6)return'🌃 Nautique';if(a<-0.83)return'🌆 Crépuscule';if(a<6)return'🌅 Golden Hour';if(a<20)return'🌤️ Matin/Soir';return'☀️ Plein jour';}
+
+// ─── COMPASS ───
+function updateComp(az,alt){const svg=document.getElementById('csv'),cx=100,cy=100,r=80,c=map.getCenter(),dk=fmtISO(curDate)+`_${c.lat.toFixed(2)}_${c.lng.toFixed(2)}`;
+if(compCK!==dk){compCD=[];const d=new Date(curDate);for(let m=0;m<1440;m+=15){d.setHours(Math.floor(m/60),m%60,0,0);const sp=SunCalc.getPosition(d,c.lat,c.lng),a2=((sp.azimuth*180/Math.PI)+180)%360,al=sp.altitude*180/Math.PI;if(al>-5){const di=r*(1-Math.max(0,al)/90)*0.85,rd=(a2-90)*Math.PI/180;compCD.push({x:cx+di*Math.cos(rd),y:cy+di*Math.sin(rd)});}}compCK=dk;}
+const sd=r*(1-Math.max(0,alt)/90)*0.85,sr=(az-90)*Math.PI/180,sx=cx+sd*Math.cos(sr),sy=cy+sd*Math.sin(sr),sc=alt>0?'#f0b429':alt>-6?'#e8590c':'#4338ca';
+let h=`<circle cx="${cx}" cy="${cy}" r="${r+5}" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>`;
+for(const e of[0,30,60]){const er=r*(1-e/90)*0.85;h+=`<circle cx="${cx}" cy="${cy}" r="${er}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" stroke-dasharray="2,3"/>`;}
+for(const d of[{l:'N',a:0},{l:'E',a:90},{l:'S',a:180},{l:'O',a:270}]){const rd=(d.a-90)*Math.PI/180;h+=`<line x1="${cx}" y1="${cy}" x2="${cx+(r+1)*Math.cos(rd)}" y2="${cy+(r+1)*Math.sin(rd)}" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/>`;h+=`<text x="${cx+(r+14)*Math.cos(rd)}" y="${cy+(r+14)*Math.sin(rd)}" text-anchor="middle" dominant-baseline="central" fill="rgba(255,255,255,0.4)" font-size="10">${d.l}</text>`;}
+if(compCD.length>1){let p=`M ${compCD[0].x} ${compCD[0].y}`;for(let i=1;i<compCD.length;i++)p+=` L ${compCD[i].x} ${compCD[i].y}`;h+=`<path d="${p}" fill="none" stroke="rgba(240,180,41,0.25)" stroke-width="2"/>`;}
+if(alt>0){h+=`<circle cx="${sx}" cy="${sy}" r="16" fill="rgba(240,180,41,0.1)"/>`;h+=`<circle cx="${sx}" cy="${sy}" r="10" fill="rgba(240,180,41,0.2)"/>`;}
+h+=`<line x1="${cx}" y1="${cy}" x2="${sx}" y2="${sy}" stroke="${sc}" stroke-width="1" stroke-opacity="0.5" stroke-dasharray="3,3"/>`;
+h+=`<circle cx="${sx}" cy="${sy}" r="6" fill="${sc}" stroke="white" stroke-width="1.5"/><circle cx="${cx}" cy="${cy}" r="2.5" fill="rgba(255,255,255,0.5)"/>`;
+svg.innerHTML=h;}
+
+// ─── HILLSHADE / LIGHTING / SKY ───
+function setHS(az){if(!map||!map.isStyleLoaded())return;const v=parseFloat(document.getElementById('thi').value);map.getStyle().layers.forEach(l=>{if(l.type==='hillshade'){if(az!==undefined){map.setPaintProperty(l.id,'hillshade-illumination-direction',az);map.setPaintProperty(l.id,'hillshade-illumination-anchor','map');}map.setPaintProperty(l.id,'hillshade-exaggeration',v);map.setPaintProperty(l.id,'hillshade-shadow-color','rgba(0,0,20,0.55)');map.setPaintProperty(l.id,'hillshade-highlight-color','rgba(255,255,245,0.30)');}});}
+function setLighting(az,alt){if(!map)return;if(az===undefined||alt===undefined){const c=map.getCenter(),sp=SunCalc.getPosition(curDate,c.lat,c.lng);az=((sp.azimuth*180/Math.PI)+180)%360;alt=sp.altitude*180/Math.PI;}
+const cf=weatherData?(weatherData.clouds?.all??0)/100:0;let col,int;
+if(alt<-6){col='#1a1a3e';int=0.05;}else if(alt<-0.83){const t=(alt+6)/5.17;col=lerp('#2a2050','#c06030',t);int=0.1+t*0.25;}
+else if(alt<3){const t=alt/3;col=lerp('#d06020','#e8a030',t);int=0.35+t*0.2;}else if(alt<10){const t=(alt-3)/7;col=lerp('#e8a030','#f5d080',t);int=0.55+t*0.15;}
+else if(alt<25){const t=(alt-10)/15;col=lerp('#f5d080','#ffffff',t);int=0.7+t*0.15;}else{col='#ffffff';int=0.85;}
+if(cf>0&&alt>0){col=lerp(col,'#b0b5c0',cf*0.75);int*=(1-cf*0.45);}
+map.setLight({anchor:'map',position:[1.5,az,alt<=0?88:Math.max(15,90-alt*0.9)],color:col,intensity:int});}
+function updateSky(alt){const sky=document.getElementById('sky-overlay'),ml=document.getElementById('map');let bg,op,mf;
+if(alt<-18){bg='linear-gradient(180deg,rgba(8,10,28,0.85) 0%,rgba(18,20,45,0.65) 100%)';op=1;mf='brightness(0.25) saturate(0.2)';}
+else if(alt<-6){bg='linear-gradient(180deg,rgba(20,24,60,0.6) 0%,rgba(60,50,78,0.3) 100%)';op=1;mf='brightness(0.45) saturate(0.3)';}
+else if(alt<-0.83){const t=(alt+6)/5.17;bg=`linear-gradient(180deg,rgba(40,45,90,${0.35-t*0.2}) 0%,rgba(200,120,50,${0.1+t*0.15}) 100%)`;op=1;mf=`brightness(${0.5+t*0.25}) saturate(${0.4+t*0.3})`;}
+else if(alt<3){const t=alt/3;bg=`linear-gradient(180deg,rgba(180,100,40,${0.15-t*0.1}) 0%,rgba(240,180,80,${0.08-t*0.06}) 100%)`;op=1;mf=`brightness(${0.75+t*0.15}) saturate(${0.7+t*0.2})`;}
+else if(alt<10){const t=(alt-3)/7;bg=`linear-gradient(180deg,rgba(240,200,100,${0.05-t*0.05}) 0%,transparent 100%)`;op=1;mf=`brightness(${0.9+t*0.1}) saturate(${0.9+t*0.1})`;}
+else{bg='none';op=0;mf='brightness(1) saturate(1)';}
+sky.style.background=bg;sky.style.opacity=op;
+if(!weatherData||(weatherData.weather?.[0]?.id<=801)){ml.style.filter=mf;}else if(alt<0){ml.style.filter+=` brightness(${Math.max(0.25,(alt+18)/18)})`;}}
+
+// ─── MAP OVERLAY ───
+function updateOverlay(){if(!map||!map.getSource('sun-dir'))return;const c=map.getCenter(),lat=c.lat,lng=c.lng,sp=SunCalc.getPosition(curDate,lat,lng),az=((sp.azimuth*180/Math.PI)+180)%360,alt=sp.altitude*180/Math.PI,R=SUN_R,f=[];
+if(alt>-6){const e=dest(lat,lng,az,R);f.push({type:'Feature',properties:{t:'cur'},geometry:{type:'LineString',coordinates:[[lng,lat],e]}});f.push({type:'Feature',properties:{t:'sun'},geometry:{type:'Point',coordinates:e}});}
+if(sunTimes.sunrise&&sunTimes.sunset){const sra=((SunCalc.getPosition(sunTimes.sunrise,lat,lng).azimuth*180/Math.PI)+180)%360,ssa=((SunCalc.getPosition(sunTimes.sunset,lat,lng).azimuth*180/Math.PI)+180)%360;f.push({type:'Feature',properties:{t:'sr'},geometry:{type:'LineString',coordinates:[[lng,lat],dest(lat,lng,sra,R*0.8)]}});f.push({type:'Feature',properties:{t:'ss'},geometry:{type:'LineString',coordinates:[[lng,lat],dest(lat,lng,ssa,R*0.8)]}});}
+const pk=fmtISO(curDate)+`_${lat.toFixed(3)}_${lng.toFixed(3)}`;
+if(pathCK!==pk){pathCD={c:[],m:[]};const d=new Date(curDate);for(let m=0;m<1440;m+=10){d.setHours(Math.floor(m/60),m%60,0,0);const s2=SunCalc.getPosition(d,lat,lng),a2=s2.altitude*180/Math.PI;if(a2>0){const az2=((s2.azimuth*180/Math.PI)+180)%360;pathCD.c.push(dest(lat,lng,az2,R*0.85));if(m%60===0){const h=Math.floor(m/60);if(h>=5&&h<=22)pathCD.m.push({c:dest(lat,lng,az2,R*0.85),l:`${h}h`});}}}pathCK=pk;}
+if(pathCD.c.length>1)f.push({type:'Feature',properties:{t:'path'},geometry:{type:'LineString',coordinates:pathCD.c}});
+pathCD.m.forEach(m=>f.push({type:'Feature',properties:{t:'hm',l:m.l},geometry:{type:'Point',coordinates:m.c}}));
+map.getSource('sun-dir').setData({type:'FeatureCollection',features:f});}
+
+// ─── ELEVATION SMOOTHING ───
+// Gaussian-like box blur to remove high-frequency terrain noise
+// Preserves major mountain shapes while eliminating small ridge shadows
+function smoothElevGrid(grid, gs, passes) {
+    let src = new Float32Array(grid);
+    let dst = new Float32Array(gs * gs);
+    for (let p = 0; p < passes; p++) {
+        // Horizontal pass: src → dst
+        for (let y = 0; y < gs; y++) {
+            for (let x = 0; x < gs; x++) {
+                const idx = y * gs + x;
+                const c = src[idx];
+                if (c < -9000) { dst[idx] = c; continue; }
+                let sum = c, cnt = 1;
+                if (x > 0 && src[idx - 1] > -9000) { sum += src[idx - 1]; cnt++; }
+                if (x < gs - 1 && src[idx + 1] > -9000) { sum += src[idx + 1]; cnt++; }
+                dst[idx] = sum / cnt;
+            }
+        }
+        // Swap: dst becomes source for vertical pass
+        let tmp = src; src = dst; dst = tmp;
+        // Vertical pass: src → dst
+        for (let y = 0; y < gs; y++) {
+            for (let x = 0; x < gs; x++) {
+                const idx = y * gs + x;
+                const c = src[idx];
+                if (c < -9000) { dst[idx] = c; continue; }
+                let sum = c, cnt = 1;
+                if (y > 0 && src[idx - gs] > -9000) { sum += src[idx - gs]; cnt++; }
+                if (y < gs - 1 && src[idx + gs] > -9000) { sum += src[idx + gs]; cnt++; }
+                dst[idx] = sum / cnt;
+            }
+        }
+        // Swap for next pass
+        tmp = src; src = dst; dst = tmp;
+    }
+    return src; // After last swap, result is in src
+}
+
+// ─── SHADOW COMPUTATION ───
+async function loadAndCompute(){
+    const btn=document.getElementById('bsh'),st=document.getElementById('sst');
+    if(map.isMoving()){st.className='ss er';st.textContent='⏳ Attendez la fin du déplacement...';return;}
+    btn.disabled=true;st.className='ss cp';
+    const c=map.getCenter(),sp=SunCalc.getPosition(curDate,c.lat,c.lng),sunAlt=sp.altitude*180/Math.PI;
+    if(sunAlt<0){st.className='ss er';st.textContent='🌙 Soleil sous l\'horizon.';btn.disabled=false;return;}
+    let res=parseInt(document.getElementById('srs').value);
+    if(!cachedGrid){
+        st.textContent='⏳ Chargement tuiles d\'élévation...';
+        try{
+            const b=map.getBounds(),z=map.getZoom();
+            const vWest=b.getWest(),vEast=b.getEast(),vNorth=b.getNorth(),vSouth=b.getSouth();
+            // Large margins: shadows can be cast from mountains far outside the viewport
+            const mg=0.20;
+            const west=vWest-mg,east=vEast+mg,north=vNorth+mg,south=vSouth-mg;
+            // Use z12 for good mountain shape resolution (~38m/pixel)
+            // Smoothing will remove noise while preserving shape
+            let zoom=12;
+            const spanKm=((east-west)*111320*Math.cos(c.lat*Math.PI/180))/1000;
+            if(spanKm>40) zoom=11; // fall back to z11 for very wide views
+            let tiles=getTiles(west,south,east,north,zoom);
+            if(tiles.length>300&&zoom>11){zoom=11;tiles=getTiles(west,south,east,north,zoom);}
+            if(tiles.length>500)throw new Error(`Trop de tuiles (${tiles.length})`);
+            st.textContent=`⏳ ${tiles.length} tuiles (z${zoom})...`;
+            const grid=await fetchElevWebGL(tiles,zoom,west,south,east,north,res);
+            if(!grid)throw new Error('Pas de données');
+            let eMin=Infinity,eMax=-Infinity;
+            for(let i=0;i<grid.length;i++){if(grid[i]>-9000){if(grid[i]<eMin)eMin=grid[i];if(grid[i]>eMax)eMax=grid[i];}}
+            cachedElevRange=[Math.round(eMin),Math.round(eMax)];
+            cachedGrid=smoothElevGrid(grid, res, 3);cachedBounds={west,south,east,north};cachedViewport={west:vWest,south:vSouth,east:vEast,north:vNorth};cachedGS=res;
+        }catch(e){st.className='ss er';st.textContent=`❌ ${e.message}`;btn.disabled=false;return;}
+    }
+    await recompute();
+    document.getElementById('asr').style.display='flex';document.getElementById('sor').style.display='flex';
+    document.getElementById('bsc').style.display='block';btn.textContent='🔄 Recharger le relief';btn.disabled=false;
+}
+
+// ─── TILE FUNCTIONS ───
+function lng2t(l,z){return Math.floor((l+180)/360*(1<<z));}
+function lat2t(l,z){return Math.floor((1-Math.log(Math.tan(l*Math.PI/180)+1/Math.cos(l*Math.PI/180))/Math.PI)/2*(1<<z));}
+function getTiles(w,s,e,n,z){const mx=lng2t(w,z),Mx=lng2t(e,z),my=lat2t(n,z),My=lat2t(s,z),t=[];for(let x=mx;x<=Mx;x++)for(let y=my;y<=My;y++)t.push({x,y,z});return t;}
+
+// ─── WEBGL PIXEL READER (zero color management) ───
+async function fetchElevWebGL(tiles,zoom,west,south,east,north,gs){
+    const ts=256;
+    
+    // Create WebGL context — WebGL does NOT apply color space conversion
+    const glCanvas=document.createElement('canvas');glCanvas.width=ts;glCanvas.height=ts;
+    const gl=glCanvas.getContext('webgl2',{preserveDrawingBuffer:true})||glCanvas.getContext('webgl',{preserveDrawingBuffer:true});
+    if(!gl){console.warn('WebGL not available, falling back to 2D canvas');return fetchElevCanvas(tiles,zoom,west,south,east,north,gs);}
+    
+    const td=new Map();
+    
+    for(let i=0;i<tiles.length;i+=12){const batch=tiles.slice(i,i+12);
+    // Fetch in parallel
+    const fetched=await Promise.allSettled(batch.map(async t=>{
+        const r=await fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${t.z}/${t.x}/${t.y}.png?key=${MK}`);
+        if(!r.ok)return null;
+        const blob=await r.blob();
+        const bmp=await createImageBitmap(blob,{colorSpaceConversion:'none',premultiplyAlpha:'none'});
+        return{tile:t,bmp};
+    }));
+    // Process GL sequentially (single context)
+    for(const r of fetched){
+        if(r.status!=='fulfilled'||!r.value)continue;
+        const{tile:t,bmp}=r.value;
+        try{
+        const tex=gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D,tex);
+        gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bmp);
+        const fb=gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+        const pix=new Uint8Array(ts*ts*4);
+        gl.readPixels(0,0,ts,ts,gl.RGBA,gl.UNSIGNED_BYTE,pix);
+        gl.deleteFramebuffer(fb);gl.deleteTexture(tex);bmp.close();
+        // Flip Y: WebGL (0,0)=bottom-left → image (0,0)=top-left
+        const flipped=new Uint8Array(ts*ts*4);
+        for(let row=0;row<ts;row++){
+            flipped.set(pix.subarray(row*ts*4,row*ts*4+ts*4),(ts-1-row)*ts*4);
+        }
+        td.set(`${t.x}_${t.y}`,flipped);
+        }catch(e){bmp.close();console.warn(`Tile GL error:`,e);}
+    }}
+    
+    console.log(`WebGL tiles: ${td.size}/${tiles.length} loaded`);
+    if(!td.size)return null;
+    
+    // Sanity check: read a known tile center pixel
+    const firstTile=[...td.values()][0];
+    const ci=(128*ts+128)*4;
+    const testElev=-10000+((firstTile[ci]*65536+firstTile[ci+1]*256+firstTile[ci+2])*0.1);
+    console.log(`Sanity check: first tile center pixel = ${testElev.toFixed(1)}m (R=${firstTile[ci]},G=${firstTile[ci+1]},B=${firstTile[ci+2]})`);
+    
+    return buildGrid(td,tiles,zoom,west,south,east,north,gs,ts);
+}
+
+// ─── 2D CANVAS FALLBACK ───
+async function fetchElevCanvas(tiles,zoom,west,south,east,north,gs){
+    const ts=256,tc=document.createElement('canvas');tc.width=ts;tc.height=ts;
+    const ctx=tc.getContext('2d',{willReadFrequently:true});
+    const td=new Map();
+    for(let i=0;i<tiles.length;i+=12){const batch=tiles.slice(i,i+12);
+    const res=await Promise.allSettled(batch.map(async t=>{
+        const r=await fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${t.z}/${t.x}/${t.y}.png?key=${MK}`);
+        if(!r.ok)return null;
+        const blob=await r.blob();
+        const img=await createImageBitmap(blob,{colorSpaceConversion:'none',premultiplyAlpha:'none'});
+        return{tile:t,img};
+    }));
+    res.forEach(r=>{if(r.status==='fulfilled'&&r.value){
+        const{tile,img}=r.value;ctx.clearRect(0,0,ts,ts);ctx.drawImage(img,0,0);
+        td.set(`${tile.x}_${tile.y}`,new Uint8Array(ctx.getImageData(0,0,ts,ts).data));
+    }});}
+    console.log(`Canvas tiles: ${td.size}/${tiles.length} loaded`);
+    if(!td.size)return null;
+    return buildGrid(td,tiles,zoom,west,south,east,north,gs,ts);
+}
+
+// ─── BUILD ELEVATION GRID FROM TILE DATA ───
+function buildGrid(td,tiles,zoom,west,south,east,north,gs,ts){
+    function readElev(tx,ty,px,py){
+        const d=td.get(`${tx}_${ty}`);
+        if(!d)return NaN;
+        const cpx=Math.max(0,Math.min(ts-1,px)),cpy=Math.max(0,Math.min(ts-1,py));
+        const off=(cpy*ts+cpx)*4;
+        return -10000+((d[off]*65536+d[off+1]*256+d[off+2])*0.1);
+    }
+    const nt=1<<zoom;
+    function sampleElev(lat,lon){
+        const lr=lat*Math.PI/180;
+        const tyf=(1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*nt;
+        const txf=(lon+180)/360*nt;
+        const tx=Math.floor(txf),ty=Math.floor(tyf);
+        const pxf=(txf-tx)*ts,pyf=(tyf-ty)*ts;
+        const px0=Math.floor(pxf),py0=Math.floor(pyf);
+        const px1=Math.min(px0+1,ts-1),py1=Math.min(py0+1,ts-1);
+        const wx=pxf-px0,wy=pyf-py0;
+        let e00=readElev(tx,ty,px0,py0),e10=readElev(tx,ty,px1,py0);
+        let e01=readElev(tx,ty,px0,py1),e11=readElev(tx,ty,px1,py1);
+        const vals=[e00,e10,e01,e11].filter(v=>!isNaN(v));
+        if(!vals.length)return NaN;
+        if(vals.length<4){const avg=vals.reduce((a,b)=>a+b,0)/vals.length;if(isNaN(e00))e00=avg;if(isNaN(e10))e10=avg;if(isNaN(e01))e01=avg;if(isNaN(e11))e11=avg;}
+        return e00*(1-wx)*(1-wy)+e10*wx*(1-wy)+e01*(1-wx)*wy+e11*wx*wy;
+    }
+    const grid=new Float32Array(gs*gs);
+    const lonS=(east-west)/gs,latS=(north-south)/gs;
+    let minE=Infinity,maxE=-Infinity,nanCount=0;
+    for(let gy=0;gy<gs;gy++){const lat=north-gy*latS;
+        for(let gx=0;gx<gs;gx++){const h=sampleElev(lat,west+gx*lonS);
+            if(isNaN(h)){nanCount++;grid[gy*gs+gx]=-9999.0;}
+            else{grid[gy*gs+gx]=h;if(h<minE)minE=h;if(h>maxE)maxE=h;}}}
+    console.log(`Elevation grid: ${gs}x${gs}, range ${minE.toFixed(0)}-${maxE.toFixed(0)}m, ${nanCount} NaN (${(nanCount*100/gs/gs).toFixed(1)}%)`);
+    return grid;
+}
+
+async function recompute(){
+    if(!cachedGrid||shadowPending)return;shadowPending=true;
+    clearDebugLayer();
+    const st=document.getElementById('sst');st.className='ss cp';
+    const c=map.getCenter(),sp=SunCalc.getPosition(curDate,c.lat,c.lng);
+    const sunAz=((sp.azimuth*180/Math.PI)+180)%360,sunAlt=sp.altitude*180/Math.PI;
+    const b=cachedBounds,gs=cachedGS;
+    const mpcX=((b.east-b.west)*111320*Math.cos(c.lat*Math.PI/180))/gs;
+    const mpcY=((b.north-b.south)*111320)/gs;
+
+    const t0=performance.now();
+
+    let intensity;
+    if(gpuAvailable){
+        st.textContent=`⚡ GPU ray-casting (${gs}px)...`;
+        try{intensity=await gpuCastShadows(cachedGrid,gs,sunAz,sunAlt,mpcX,mpcY);}
+        catch(e){console.error('GPU error, falling back to CPU:',e);intensity=await cpuCast(gs,sunAz,sunAlt,mpcX,mpcY);}
+    }else{
+        st.textContent=`🖥️ CPU ray-casting (${gs}px)...`;
+        intensity=await cpuCast(gs,sunAz,sunAlt,mpcX,mpcY);
+    }
+
+    const dt=((performance.now()-t0)/1000).toFixed(2);
+    
+    // ── POST-PROCESSING: MULTI-SCALE self-shadowing ──
+    // Use multiple kernel sizes to capture both local and mountain-scale face orientation
+    const sunAzRad=sunAz*Math.PI/180,sunAltRad=sunAlt*Math.PI/180;
+    const cosAltD=Math.cos(sunAltRad),sinAltD=Math.sin(sunAltRad);
+    const sdx=Math.sin(sunAzRad)*cosAltD,sdy=-Math.cos(sunAzRad)*cosAltD,sdz=sinAltD;
+    
+    const radii=[4,8,14];
+    const maxR=radii[radii.length-1];
+    let selfCount=0,maxSelf=0;
+    
+    function computeSelfShadow(x,y,r){
+        if(x<r||x>=gs-r||y<r||y>=gs-r)return 0;
+        const eL=cachedGrid[y*gs+(x-r)],eR=cachedGrid[y*gs+(x+r)];
+        const eU=cachedGrid[(y-r)*gs+x],eD=cachedGrid[(y+r)*gs+x];
+        if(eL<-9000||eR<-9000||eU<-9000||eD<-9000)return 0;
+        const dzdx=(eR-eL)/(r*2*mpcX);
+        const dzdy=(eD-eU)/(r*2*mpcY);
+        const slopeMag=Math.sqrt(dzdx*dzdx+dzdy*dzdy);
+        if(slopeMag<0.12)return 0; // ~7° minimum
+        const nx=-dzdx,ny=-dzdy,nz=1;
+        const nLen=Math.sqrt(nx*nx+ny*ny+nz*nz);
+        const cosA=(nx*sdx+ny*sdy+nz*sdz)/nLen;
+        if(cosA<=0)return 1.0;
+        if(cosA>=0.35)return 0;
+        if(cosA<=0.15)return 1.0;
+        return (0.35-cosA)/0.20;
+    }
+    
+    for(let y=maxR;y<gs-maxR;y++){
+        for(let x=maxR;x<gs-maxR;x++){
+            const idx=y*gs+x;
+            if(cachedGrid[idx]<-9000)continue;
+            // Take maximum self-shadow across all kernel scales
+            let best=0;
+            for(const r of radii){
+                const sh=computeSelfShadow(x,y,r);
+                if(sh>best)best=sh;
+                if(best>=1.0)break; // early exit
+            }
+            if(best>0){
+                const selfVal=Math.round(best*255);
+                if(selfVal>intensity[idx]){
+                    intensity[idx]=selfVal;
+                    selfCount++;
+                    if(best>maxSelf)maxSelf=best;
+                }
+            }
+        }
+    }
+    console.log(`Self-shadow post-processing: ${selfCount} pixels modified, max=${maxSelf.toFixed(2)}`);
+    console.log(`Sun: az=${sunAz.toFixed(1)}° alt=${sunAlt.toFixed(1)}° dir=(${sdx.toFixed(3)},${sdy.toFixed(3)},${sdz.toFixed(3)})`);
+    console.log(`Grid: ${gs}x${gs}, cellX=${mpcX.toFixed(1)}m cellY=${mpcY.toFixed(1)}m`);
+    
+    renderShadow(intensity,gs,b.west,b.south,b.east,b.north);
+    st.className='ss dn';
+    const cardinal=['N','NE','E','SE','S','SW','W','NW'][Math.round(sunAz/45)%8];
+    const oppCardinal=['S','SW','W','NW','N','NE','E','SE'][Math.round(sunAz/45)%8];
+    const coverX=((b.east-b.west)*111320*Math.cos(c.lat*Math.PI/180)/1000).toFixed(1);
+    const coverY=((b.north-b.south)*111320/1000).toFixed(1);
+    const cellSize=Math.round(mpcX);
+    const rawDx=Math.sin(sunAz*Math.PI/180)/mpcX,rawDy=-Math.cos(sunAz*Math.PI/180)/mpcY;
+    const maxComp=Math.max(Math.abs(rawDx),Math.abs(rawDy));
+    const stepDist=Math.sqrt(((rawDx/maxComp)*mpcX)**2+((rawDy/maxComp)*mpcY)**2);
+    const maxRaySteps=Math.min(Math.ceil(50000/stepDist),gs*2);
+    const rayKm=(maxRaySteps*stepDist/1000).toFixed(0);
+    // Shadow stats
+    let shFull=0,shPartial=0;
+    for(let i=0;i<intensity.length;i++){if(intensity[i]===255)shFull++;else if(intensity[i]>0)shPartial++;}
+    const shPct=((shFull+shPartial)*100/intensity.length).toFixed(1);
+    const umbraPct=(shFull*100/intensity.length).toFixed(1);
+    st.innerHTML=`✅ ${gs}px en ${dt}s ${gpuAvailable?'(GPU)':'(CPU)'} — ${shPct}% ombre (${umbraPct}% ombre pleine)<br>` +
+        `<span style="font-size:0.65rem;color:var(--t3)">` +
+        `☀️ az=${sunAz.toFixed(0)}° (${cardinal}) · alt=${sunAlt.toFixed(1)}° · ombres côté ${oppCardinal}<br>` +
+        `📐 Grille ${coverX}×${coverY}km · cellule ~${cellSize}m · rayon max ~${rayKm}km` +
+        (cachedElevRange?`<br>⛰️ Relief: ${cachedElevRange[0]}-${cachedElevRange[1]}m`:'') + `</span>`;
+    document.getElementById('bdbg').style.display='block';
+    shadowPending=false;
+}
+
+function cpuCast(gs,sunAz,sunAlt,mpcX,mpcY){
+    return new Promise(resolve=>{
+        if(!cpuWorker)cpuWorker=createCpuWorker();
+        cpuWorker.onmessage=e=>{resolve(e.data.intensity);};
+        const copy=new Float32Array(cachedGrid);
+        cpuWorker.postMessage({elevGrid:copy,gridSize:gs,sunAzDeg:sunAz,sunAltDeg:sunAlt,metersPerCellX:mpcX,metersPerCellY:mpcY},[copy.buffer]);
+    });
+}
+
+function clearShadows(){clearShadowLayer();clearDebugLayer();cachedGrid=null;cachedBounds=null;cachedViewport=null;cachedElevRange=null;if(cpuWorker){cpuWorker.terminate();cpuWorker=null;}
+document.getElementById('bsc').style.display='none';document.getElementById('bdbg').style.display='none';document.getElementById('asr').style.display='none';document.getElementById('sor').style.display='none';
+document.getElementById('sst').textContent='';document.getElementById('sst').className='ss';document.getElementById('bsh').textContent='☀️ Charger le relief & calculer';}
+function clearShadowLayer(){if(map.getLayer('sh-ov'))map.removeLayer('sh-ov');if(map.getSource('sh-src'))map.removeSource('sh-src');}
+function clearDebugLayer(){if(map.getLayer('elev-dbg'))map.removeLayer('elev-dbg');if(map.getSource('elev-dbg-src'))map.removeSource('elev-dbg-src');}
+
+function showElevDebug(){
+    try{
+    if(!cachedGrid||!cachedBounds){console.warn('No grid data for debug');return;}
+    clearDebugLayer();clearShadowLayer();
+    const gs=cachedGS,b=cachedBounds;
+    let mn=Infinity,mx=-Infinity;
+    for(let i=0;i<cachedGrid.length;i++){const v=cachedGrid[i];if(v>-9000){if(v<mn)mn=v;if(v>mx)mx=v;}}
+    const range=mx-mn||1;
+    const cv=document.createElement('canvas');cv.width=gs;cv.height=gs;
+    const ctx=cv.getContext('2d');const img=ctx.createImageData(gs,gs);
+    for(let i=0;i<gs*gs;i++){
+        const v=cachedGrid[i],p=i*4;
+        if(v<-9000){img.data[p]=255;img.data[p+1]=0;img.data[p+2]=255;img.data[p+3]=200;continue;}
+        const t=Math.max(0,Math.min(1,(v-mn)/range));
+        let r,g,bl;
+        if(t<0.25){const s=t/0.25;r=0;g=Math.round(100*s);bl=Math.round(200*(1-s));}
+        else if(t<0.5){const s=(t-0.25)/0.25;r=Math.round(180*s);g=Math.round(100+80*s);bl=0;}
+        else if(t<0.75){const s=(t-0.5)/0.25;r=Math.round(180+60*s);g=Math.round(180-80*s);bl=0;}
+        else{const s=(t-0.75)/0.25;r=Math.round(240+15*s);g=Math.round(100+155*s);bl=Math.round(255*s);}
+        img.data[p]=r;img.data[p+1]=g;img.data[p+2]=bl;img.data[p+3]=200;
+    }
+    ctx.putImageData(img,0,0);
+    map.addSource('elev-dbg-src',{type:'image',url:cv.toDataURL(),coordinates:[[b.west,b.north],[b.east,b.north],[b.east,b.south],[b.west,b.south]]});
+    map.addLayer({id:'elev-dbg',type:'raster',source:'elev-dbg-src',paint:{'raster-opacity':0.7,'raster-fade-duration':0}});
+    document.getElementById('sst').innerHTML=`<span style="color:var(--t3)">🔍 Élévation: ${mn.toFixed(0)}-${mx.toFixed(0)}m<br><span style="font-size:0.6rem">🟦 bas → 🟩🟨 moyen → 🟥⬜ haut · 🟪 = données manquantes<br>Changez l'heure pour revenir aux ombres</span></span>`;
+    console.log('Debug elevation displayed:',mn.toFixed(0),'-',mx.toFixed(0),'m');
+    }catch(e){console.error('showElevDebug error:',e);document.getElementById('sst').textContent='❌ Debug error: '+e.message;}
+}
+
+function renderShadow(intensity,gs,west,south,east,north){clearShadowLayer();
+// Crop to viewport bounds (exclude margins which have edge artifacts)
+const vp=cachedViewport||{west,south,east,north};
+const gridW=east-west,gridH=north-south;
+// Pixel ranges for viewport within the full grid
+const vpx0=Math.max(0,Math.round((vp.west-west)/gridW*gs));
+const vpx1=Math.min(gs,Math.round((vp.east-west)/gridW*gs));
+const vpy0=Math.max(0,Math.round((north-vp.north)/gridH*gs));
+const vpy1=Math.min(gs,Math.round((north-vp.south)/gridH*gs));
+const vpW=vpx1-vpx0,vpH=vpy1-vpy0;
+if(vpW<=0||vpH<=0)return;
+
+const cv=document.createElement('canvas');cv.width=vpW;cv.height=vpH;const ctx=cv.getContext('2d');
+const img=ctx.createImageData(vpW,vpH);
+// Small edge fade only at grid boundaries that coincide with viewport edge
+const edgeFade=Math.round(Math.min(vpW,vpH)*0.04);
+for(let vy=0;vy<vpH;vy++){
+    const gy=vpy0+vy;
+    for(let vx=0;vx<vpW;vx++){
+        const gx=vpx0+vx;
+        const val=intensity[gy*gs+gx];
+        if(val>0){
+            const p=(vy*vpW+vx)*4;
+            let alpha=val;
+            // Very gentle edge fade at viewport borders
+            const edgeDist=Math.min(vx,vy,vpW-1-vx,vpH-1-vy);
+            if(edgeDist<edgeFade) alpha=(alpha*edgeDist/edgeFade)|0;
+            img.data[p]=8;img.data[p+1]=8;img.data[p+2]=35;
+            img.data[p+3]=alpha;
+        }
+    }
+}
+ctx.putImageData(img,0,0);
+// Single blur pass for smooth edges
+const cv2=document.createElement('canvas');cv2.width=vpW;cv2.height=vpH;const ctx2=cv2.getContext('2d');
+ctx2.filter='blur(1.5px)';ctx2.drawImage(cv,0,0);
+// Map overlay uses viewport bounds (not grid bounds)
+map.addSource('sh-src',{type:'image',url:cv2.toDataURL(),coordinates:[[vp.west,vp.north],[vp.east,vp.north],[vp.east,vp.south],[vp.west,vp.south]]});
+const op=parseFloat(document.getElementById('sop').value);
+const before=map.getLayer('sun-path')?'sun-path':undefined;
+map.addLayer({id:'sh-ov',type:'raster',source:'sh-src',paint:{'raster-opacity':op,'raster-fade-duration':0}},before);}
+
+
+// ─── TRAILS ───
+async function loadTrails(){const btn=document.getElementById('btl'),st=document.getElementById('tst');
+if(map.getZoom()<12){st.className='ss er';st.textContent='❌ Zoomez davantage pour charger les sentiers (zoom ≥ 12).';return;}
+btn.disabled=true;st.className='ss cp';st.textContent='⏳ Requête OSM...';
+const b=map.getBounds(),s=b.getSouth().toFixed(5),w=b.getWest().toFixed(5),n=b.getNorth().toFixed(5),e=b.getEast().toFixed(5);
+const q=`[out:json][timeout:30];(way["highway"="path"]["sac_scale"](${s},${w},${n},${e});way["highway"="footway"]["sac_scale"](${s},${w},${n},${e});relation["route"="hiking"](${s},${w},${n},${e});way["highway"="path"]["trail_visibility"](${s},${w},${n},${e}););out geom;`;
+try{const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q)});if(!r.ok)throw new Error(`HTTP ${r.status}`);const data=await r.json();
+const feats=[];for(const el of data.elements){if(el.type==='way'&&el.geometry){feats.push({type:'Feature',properties:{name:el.tags?.name||'',diff:el.tags?.sac_scale||'unknown'},geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])}});}
+else if(el.type==='relation'&&el.members){for(const m of el.members){if(m.type==='way'&&m.geometry)feats.push({type:'Feature',properties:{name:el.tags?.name||'',diff:el.tags?.sac_scale||'unknown'},geometry:{type:'LineString',coordinates:m.geometry.map(p=>[p.lon,p.lat])}});}}}
+['hiking-trails','hiking-trails-glow'].forEach(l=>{if(map.getLayer(l))map.removeLayer(l);});if(map.getSource('hiking-trails'))map.removeSource('hiking-trails');
+map.addSource('hiking-trails',{type:'geojson',data:{type:'FeatureCollection',features:feats}});
+map.addLayer({id:'hiking-trails-glow',type:'line',source:'hiking-trails',paint:{'line-color':'rgba(255,255,255,0.4)','line-width':4,'line-blur':2}});
+map.addLayer({id:'hiking-trails',type:'line',source:'hiking-trails',paint:{'line-color':['match',['get','diff'],'hiking','#22b8cf','mountain_hiking','#f59f00','demanding_mountain_hiking','#e8590c','alpine_hiking','#e03131','demanding_alpine_hiking','#9c36b5','difficult_alpine_hiking','#1a1a1a','#e03131'],'line-width':['interpolate',['linear'],['zoom'],10,1.5,14,3,18,5],'line-opacity':0.85}});
+st.className='ss dn';st.textContent=`✅ ${feats.length} sentiers`;document.getElementById('ttr').style.display='flex';btn.textContent='🔄 Recharger';
+}catch(e){st.className='ss er';st.textContent=`❌ ${e.message}`;}btn.disabled=false;}
+
+// ─── UTILS ───
+function dest(lat,lng,b,d){const R=6371000,dr=d/R,br=b*Math.PI/180,la=lat*Math.PI/180,lo=lng*Math.PI/180;const la2=Math.asin(Math.sin(la)*Math.cos(dr)+Math.cos(la)*Math.sin(dr)*Math.cos(br));const lo2=lo+Math.atan2(Math.sin(br)*Math.sin(dr)*Math.cos(la),Math.cos(dr)-Math.sin(la)*Math.sin(la2));return[lo2*180/Math.PI,la2*180/Math.PI];}
+function lerp(a,b,t){const p=c=>{if(c[0]==='#'){const h=parseInt(c.slice(1),16);return[(h>>16)&0xFF,(h>>8)&0xFF,h&0xFF];}const m=c.match(/\d+/g);return m?[+m[0],+m[1],+m[2]]:[255,255,255];};const[ar,ag,ab]=p(a),[br,bg,bb]=p(b);return`rgb(${Math.round(ar+(br-ar)*t)},${Math.round(ag+(bg-ag)*t)},${Math.round(ab+(bb-ab)*t)})`;}
+function fmtT(d){return d&&!isNaN(d.getTime())?`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`:'—';}
+function fmtISO(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+
+}); // end load
+</script>
+</body>
+</html>
