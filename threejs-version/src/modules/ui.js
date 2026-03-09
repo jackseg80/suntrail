@@ -65,10 +65,9 @@ function initGeocoding() {
                         state.TARGET_LON = lng;
                         
                         // On réinitialise la position de la caméra au-dessus du nouveau lieu
-                        if(state.controls) state.controls.target.set(0, 0, 0);
-                        if(state.camera) state.camera.position.set(0, 3000, 8000);
-                        
-                        await loadTerrain();
+                        // Note : Dans un Tile Manager, le point (0,0,0) est toujours le centre du chargement initial
+                        // Pour une navigation fluide, on va simplement forcer le rechargement des tuiles
+                        await updateVisibleTiles();
                         updateSunPosition(document.getElementById('time-slider').value);
                     });
                     geoResults.appendChild(item);

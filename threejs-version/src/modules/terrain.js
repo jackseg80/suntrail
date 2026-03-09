@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 import { state } from './state.js';
 
-function lngLatToTile(lon, lat, zoom) {
+const TILE_SIZE_METERS = 5000; // Chaque tuile fera 5km de côté
+const RESOLUTION = 128; // 128x128 segments par tuile pour garder la fluidité
+const activeTiles = new Map(); // Stocke les meshes par clé "x_y_z"
+
+export function lngLatToTile(lon, lat, zoom) {
     const x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
     const y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
     return { x, y, z: zoom };
@@ -16,135 +20,118 @@ function tileToLat(y, z) {
     return (180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))));
 }
 
-export async function loadTerrain() {
-    const btn = document.getElementById('bgo');
-    btn.textContent = "Téléchargement et décodage HD...";
-    
-    const centerTile = lngLatToTile(state.TARGET_LON, state.TARGET_LAT, state.ZOOM);
-    const gridSize = 3; 
-    const offset = Math.floor(gridSize / 2);
-    
-    const tileSize = 256;
-    const canvasSize = tileSize * gridSize;
-    
-    // Calcul des dimensions physiques exactes du carré téléchargé (Échelle 1:1)
-    const westLng = tileToLng(centerTile.x - offset, state.ZOOM);
-    const eastLng = tileToLng(centerTile.x + offset + 1, state.ZOOM);
-    const northLat = tileToLat(centerTile.y - offset, state.ZOOM);
-    const southLat = tileToLat(centerTile.y + offset + 1, state.ZOOM);
-    
-    const widthMeters = (eastLng - westLng) * 111320 * Math.cos(state.TARGET_LAT * Math.PI / 180);
-    const heightMeters = (northLat - southLat) * 111320;
-    
-    const colorCanvas = document.createElement('canvas');
-    colorCanvas.width = canvasSize; colorCanvas.height = canvasSize;
-    const colorCtx = colorCanvas.getContext('2d');
-    
-    const elevCanvas = document.createElement('canvas');
-    elevCanvas.width = canvasSize; elevCanvas.height = canvasSize;
-    const elevCtx = elevCanvas.getContext('2d', { willReadFrequently: true });
+// Calcule la position 3D (X, Z) d'une tuile par rapport à un point d'origine
+function getTilePosition(tx, ty, zoom, originTile) {
+    const lon = tileToLng(tx, zoom);
+    const lat = tileToLat(ty, zoom);
+    const originLon = tileToLng(originTile.x, zoom);
+    const originLat = tileToLat(originTile.y, zoom);
 
-    const promises = [];
-    for (let dy = -offset; dy <= offset; dy++) {
-        for (let dx = -offset; dx <= offset; dx++) {
+    const dx = (lon - originLon) * 111320 * Math.cos(lat * Math.PI / 180);
+    const dz = (originLat - lat) * 111320;
+    return { x: dx, z: dz };
+}
+
+export async function updateVisibleTiles() {
+    if (!state.mapCenter) {
+        state.mapCenter = { lat: state.TARGET_LAT, lon: state.TARGET_LON };
+    }
+
+    const centerTile = lngLatToTile(state.TARGET_LON, state.TARGET_LAT, state.ZOOM);
+    const range = 2; // On charge 2 tuiles autour du centre (total 5x5)
+    
+    const neededTiles = new Set();
+
+    for (let dy = -range; dy <= range; dy++) {
+        for (let dx = -range; dx <= range; dx++) {
             const tx = centerTile.x + dx;
             const ty = centerTile.y + dy;
-            const px = (dx + offset) * tileSize;
-            const py = (dy + offset) * tileSize;
+            const key = `${tx}_${ty}_${state.ZOOM}`;
+            neededTiles.add(key);
 
-            const pElev = fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${state.ZOOM}/${tx}/${ty}.png?key=${state.MK}`)
-                .then(r => r.blob()).then(b => createImageBitmap(b))
-                .then(img => elevCtx.drawImage(img, px, py, tileSize, tileSize));
-                
-            const pColor = fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${state.ZOOM}/${tx}/${ty}@2x.png?key=${state.MK}`)
-                .then(r => r.ok ? r.blob() : fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${state.ZOOM}/${tx}/${ty}.png?key=${state.MK}`).then(r2 => r2.blob()))
-                .then(b => createImageBitmap(b))
-                .then(img => colorCtx.drawImage(img, px, py, tileSize, tileSize));
-                
-            promises.push(pElev, pColor);
+            if (!activeTiles.has(key)) {
+                loadSingleTile(tx, ty, state.ZOOM, centerTile, key);
+            }
         }
     }
-    
-    await Promise.all(promises);
 
-    const imgData = elevCtx.getImageData(0, 0, canvasSize, canvasSize);
-    const data = imgData.data;
-    
-    const heights = new Float32Array(canvasSize * canvasSize);
-    let minH = Infinity;
-    
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i+1], b = data[i+2];
-        const h = -10000 + ((r * 65536 + g * 256 + b) * 0.1);
-        heights[i / 4] = h;
-        if (h < minH && h > -9000) minH = h;
+    // Nettoyage des tuiles trop lointaines
+    for (const [key, mesh] of activeTiles.entries()) {
+        if (!neededTiles.has(key)) {
+            state.scene.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+            activeTiles.delete(key);
+        }
     }
+}
 
-    const colorTex = new THREE.CanvasTexture(colorCanvas);
-    colorTex.colorSpace = THREE.SRGBColorSpace;
-    if(state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
+async function loadSingleTile(tx, ty, zoom, originTile, key) {
+    // On marque la tuile comme "en cours" pour éviter les doublons
+    activeTiles.set(key, null);
 
-    const segments = 1024; 
-    // Utilisation des dimensions physiques réelles (ex: 41000 x 58000 mètres)
-    const geometry = new THREE.PlaneGeometry(widthMeters, heightMeters, segments, segments);
-    geometry.rotateX(-Math.PI / 2);
+    try {
+        const pElev = fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${zoom}/${tx}/${ty}.png?key=${state.MK}`)
+            .then(r => r.blob()).then(b => createImageBitmap(b));
+            
+        const pColor = fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${zoom}/${tx}/${ty}@2x.png?key=${state.MK}`)
+            .then(r => r.ok ? r.blob() : fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${zoom}/${tx}/${ty}.png?key=${state.MK}`).then(r2 => r2.blob()))
+            .then(b => createImageBitmap(b));
 
-    const positions = geometry.attributes.position.array;
-    
-    function getElevationBilinear(u, v) {
-        let x = u * (canvasSize - 1);
-        let y = v * (canvasSize - 1);
-        if (x < 0) x = 0; if (x >= canvasSize - 1) x = canvasSize - 1.001;
-        if (y < 0) y = 0; if (y >= canvasSize - 1) y = canvasSize - 1.001;
+        const [imgElev, imgColor] = await Promise.all([pElev, pColor]);
 
-        const x0 = Math.floor(x);
-        const y0 = Math.floor(y);
-        const x1 = x0 + 1;
-        const y1 = y0 + 1;
+        // Décodage élévation
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 256;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(imgElev, 0, 0);
+        const data = ctx.getImageData(0, 0, 256, 256).data;
 
-        const wx = x - x0;
-        const wy = y - y0;
+        const heights = new Float32Array(256 * 256);
+        let minH = Infinity;
+        for (let i = 0; i < data.length; i += 4) {
+            const h = -10000 + ((data[i] * 65536 + data[i+1] * 256 + data[data[i+2]]) * 0.1);
+            heights[i/4] = h;
+            if (h < minH && h > -9000) minH = h;
+        }
 
-        const h00 = heights[y0 * canvasSize + x0];
-        const h10 = heights[y0 * canvasSize + x1];
-        const h01 = heights[y1 * canvasSize + x0];
-        const h11 = heights[y1 * canvasSize + x1];
+        // Texture couleur
+        const colorTex = new THREE.CanvasTexture(imgColor);
+        colorTex.colorSpace = THREE.SRGBColorSpace;
 
-        if (h00 < -9000 || h10 < -9000 || h01 < -9000 || h11 < -9000) return h00;
+        // Géométrie
+        const pos = getTilePosition(tx, ty, zoom, originTile);
+        const w = (tileToLng(tx + 1, zoom) - tileToLng(tx, zoom)) * 111320 * Math.cos(tileToLat(ty, zoom) * Math.PI / 180);
+        const h = (tileToLat(ty, zoom) - tileToLat(ty + 1, zoom)) * 111320;
 
-        return h00 * (1 - wx) * (1 - wy) +
-               h10 * wx * (1 - wy) +
-               h01 * (1 - wx) * wy +
-               h11 * wx * wy;
+        const geometry = new THREE.PlaneGeometry(w, h, RESOLUTION, RESOLUTION);
+        geometry.rotateX(-Math.PI / 2);
+
+        const vertices = geometry.attributes.position.array;
+        for (let i = 0; i < vertices.length; i += 3) {
+            const u = (vertices[i] / w) + 0.5;
+            const v = (vertices[i+2] / h) + 0.5;
+            const px = Math.floor(u * 255);
+            const py = Math.floor(v * 255);
+            vertices[i+1] = heights[py * 256 + px] || 0;
+        }
+        geometry.computeVertexNormals();
+
+        const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ map: colorTex, roughness: 0.9 }));
+        mesh.position.set(pos.x + w/2, 0, pos.z + h/2);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+
+        state.scene.add(mesh);
+        activeTiles.set(key, mesh);
+
+    } catch (e) {
+        console.error("Erreur chargement tuile", key, e);
+        activeTiles.delete(key);
     }
+}
 
-    for (let i = 0; i < positions.length; i += 3) {
-        // En PlaneGeometry, l'origine (0,0) est au centre. 
-        // On récupère les UV (0 à 1) depuis les coordonnées X et Z actuelles.
-        const u = (positions[i] / widthMeters) + 0.5;
-        const v = (positions[i+2] / heightMeters) + 0.5; 
-        
-        const h = getElevationBilinear(u, v);
-        positions[i+1] = h > -9000 ? h : minH; 
-    }
-
-    geometry.computeVertexNormals();
-
-    const material = new THREE.MeshStandardMaterial({
-        map: colorTex,
-        roughness: 0.9,
-        metalness: 0.0,
-        flatShading: false
-    });
-
-    if (state.terrainMesh) state.scene.remove(state.terrainMesh);
-
-    state.terrainMesh = new THREE.Mesh(geometry, material);
-    state.terrainMesh.castShadow = true;
-    state.terrainMesh.receiveShadow = true;
-    state.terrainMesh.position.y = -minH;
-    
-    state.scene.add(state.terrainMesh);
-    
-    btn.textContent = "Recharger le relief";
+// Fonction legacy pour garder la compatibilité avec le bouton de démarrage
+export async function loadTerrain() {
+    await updateVisibleTiles();
 }

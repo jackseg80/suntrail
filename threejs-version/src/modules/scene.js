@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
-import { loadTerrain } from './terrain.js';
+import { loadTerrain, updateVisibleTiles } from './terrain.js';
+import { throttle } from '../../src/modules/utils.js'; // Réutilise le throttle du projet principal
 
 export async function initScene() {
     const container = document.getElementById('canvas-container');
@@ -10,7 +11,6 @@ export async function initScene() {
     // 1. Scène et Brouillard
     state.scene = new THREE.Scene();
     state.scene.background = new THREE.Color(0x87CEEB);
-    // Brouillard réduit (densité de 0.0001 à 0.00004) pour voir plus loin
     state.scene.fog = new THREE.FogExp2(0x87CEEB, 0.00004); 
 
     // 2. Moteur de rendu
@@ -22,13 +22,19 @@ export async function initScene() {
     container.appendChild(state.renderer.domElement);
 
     // 3. Caméra et Contrôles
-    state.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 80000);
+    state.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 10, 100000);
     state.camera.position.set(0, 3000, 8000);
 
     state.controls = new OrbitControls(state.camera, state.renderer.domElement);
     state.controls.enableDamping = true;
     state.controls.dampingFactor = 0.05;
-    state.controls.maxPolarAngle = Math.PI / 2 - 0.05; // Ne pas passer sous le sol
+    state.controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+    // Mise à jour des tuiles lors du mouvement
+    const throttledUpdate = throttle(() => {
+        updateVisibleTiles();
+    }, 500);
+    state.controls.addEventListener('change', throttledUpdate);
 
     // 4. Éclairage
     const ambientLight = new THREE.AmbientLight(0x404050, 0.4);
@@ -39,20 +45,20 @@ export async function initScene() {
     
     state.sunLight.shadow.mapSize.width = 4096;
     state.sunLight.shadow.mapSize.height = 4096;
-    const d = 10000;
+    const d = 20000; // Étendu pour couvrir plus de tuiles
     state.sunLight.shadow.camera.left = -d;
     state.sunLight.shadow.camera.right = d;
     state.sunLight.shadow.camera.top = d;
     state.sunLight.shadow.camera.bottom = -d;
     state.sunLight.shadow.camera.near = 100;
-    state.sunLight.shadow.camera.far = 30000;
+    state.sunLight.shadow.camera.far = 50000;
     state.sunLight.shadow.bias = -0.0005;
     
     state.scene.add(state.sunLight);
 
     // 5. Chargement initial
     await loadTerrain();
-    updateSunPosition(720); // Midi
+    updateSunPosition(720); 
 
     // 6. Boucle d'animation
     window.addEventListener('resize', onWindowResize);
