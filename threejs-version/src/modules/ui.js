@@ -69,6 +69,7 @@ function initGeocoding() {
                             state.initialLon = lng;
                             state.controls.target.set(0, 0, 0);
                             state.camera.position.set(0, 3000, 8000);
+                            state.controls.update(); // Validation vitale du déplacement
                         }
                         
                         // 3. Destruction absolue de toutes les anciennes montagnes (tuiles)

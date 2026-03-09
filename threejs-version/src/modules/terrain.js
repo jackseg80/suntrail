@@ -176,7 +176,9 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         mesh.receiveShadow = true;
 
         state.scene.add(mesh);
-        activeTiles.set(key, mesh);
+        // On met à jour l'objet d'état sécurisé (on n'écrase pas la map avec le mesh brut !)
+        tileObj.status = 'loaded';
+        tileObj.mesh = mesh;
 
         const btn = document.getElementById('bgo');
         if (btn) btn.textContent = "Recharger le relief";
