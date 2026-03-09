@@ -86,7 +86,7 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
-        colorTex.flipY = false; // CORRECTION 1: Remet les textes à l'endroit et aligne la texture avec la 3D !
+        colorTex.flipY = false; // Maintient les textes lisibles et l'image à l'endroit
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
@@ -94,8 +94,8 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         const dx = (tx - originTile.x) * tileSizeMeters;
         const dz = (ty - originTile.y) * tileSizeMeters;
 
-        // CORRECTION 2: On agrandit la géométrie de 1% pour forcer le chevauchement et boucher les "vides" (Seams)
-        const overlapSize = tileSizeMeters * 1.01;
+        // Légère augmentation (+0.5%) de la taille pour boucher les coutures (seams/gaps)
+        const overlapSize = tileSizeMeters * 1.005;
         const geometry = new THREE.PlaneGeometry(overlapSize, overlapSize, RESOLUTION, RESOLUTION);
         geometry.rotateX(-Math.PI / 2);
 
@@ -131,10 +131,10 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
                    h11 * wx * wy;
         }
 
-        // Élévation des sommets de la tuile
         for (let i = 0; i < vertices.length; i += 3) {
-            const u = (vertices[i] / tileSizeMeters) + 0.5;
-            const v = (vertices[i+2] / tileSizeMeters) + 0.5;
+            const u = (vertices[i] / overlapSize) + 0.5;
+            // Inversion de V car l'image est retournée avec flipY=false par rapport à l'axe Z 3D
+            const v = 1.0 - ((vertices[i+2] / overlapSize) + 0.5); 
             
             const h = getElevationBilinear(u, v);
             vertices[i+1] = (h > -9000 ? h : minH) * heightScale;
