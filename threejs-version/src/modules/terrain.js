@@ -27,10 +27,9 @@ export async function updateVisibleTiles(camLat, camLon, camAltitude) {
     const centerTile = lngLatToTile(currentLon, currentLat, state.ZOOM);
     
     // Range dynamique : si la caméra est très haute (dézoom), on charge plus loin !
-    // Altitude de base ~3000 unités. Si altitude = 8000, on charge 3 tuiles (7x7), etc.
     let range = 2; // Par défaut : 5x5 tuiles
     if (camAltitude) {
-        if (camAltitude > 12000) range = 4; // 9x9 = 81 tuiles (Très large vue)
+        if (camAltitude > 12000) range = 4; // 9x9 = 81 tuiles
         else if (camAltitude > 6000) range = 3; // 7x7 = 49 tuiles
     }
     
@@ -50,13 +49,13 @@ export async function updateVisibleTiles(camLat, camLon, camAltitude) {
     }
 
     // Nettoyage des tuiles lointaines (hors du nouveau range)
-    for (const [key, mesh] of activeTiles.entries()) {
+    for (const [key, tileObj] of activeTiles.entries()) {
         if (!neededTiles.has(key)) {
-            if (mesh) {
-                state.scene.remove(mesh);
-                mesh.geometry.dispose();
-                mesh.material.map.dispose();
-                mesh.material.dispose();
+            if (tileObj && tileObj.mesh) {
+                state.scene.remove(tileObj.mesh);
+                tileObj.mesh.geometry.dispose();
+                if (tileObj.mesh.material.map) tileObj.mesh.material.map.dispose();
+                tileObj.mesh.material.dispose();
             }
             activeTiles.delete(key);
         }
@@ -64,19 +63,23 @@ export async function updateVisibleTiles(camLat, camLon, camAltitude) {
 }
 
 async function loadSingleTile(tx, ty, zoom, originTile, key) {
-    activeTiles.set(key, null); // Marque comme "en cours de chargement"
+    // Objet d'état sécurisé pour éviter les Race Conditions lors des déplacements rapides
+    const tileObj = { status: 'loading', mesh: null };
+    activeTiles.set(key, tileObj);
 
     try {
         const pElev = fetch(`https://api.maptiler.com/tiles/terrain-rgb-v2/${zoom}/${tx}/${ty}.png?key=${state.MK}`)
-            .then(r => r.blob()).then(b => createImageBitmap(b));
+            .then(r => { if(!r.ok) throw new Error('404'); return r.blob(); })
+            .then(b => createImageBitmap(b));
             
         const pColor = fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${zoom}/${tx}/${ty}@2x.png?key=${state.MK}`)
-            .then(r => r.ok ? r.blob() : fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${zoom}/${tx}/${ty}.png?key=${state.MK}`).then(r2 => r2.blob()))
+            .then(r => r.ok ? r.blob() : fetch(`https://api.maptiler.com/maps/outdoor-v2/256/${zoom}/${tx}/${ty}.png?key=${state.MK}`).then(r2 => { if(!r2.ok) throw new Error('404'); return r2.blob(); }))
             .then(b => createImageBitmap(b));
 
         const [imgElev, imgColor] = await Promise.all([pElev, pColor]);
 
-        if (!activeTiles.has(key)) return; // Si la tuile a été annulée pendant le fetch
+        // Vérification de sécurité : Si l'utilisateur s'est éloigné trop vite, la tuile a été supprimée ou rechargée. On annule l'affichage.
+        if (activeTiles.get(key) !== tileObj) return;
 
         // Décodage de l'élévation RGB
         const canvas = document.createElement('canvas');
@@ -179,8 +182,11 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         if (btn) btn.textContent = "Recharger le relief";
 
     } catch (e) {
-        console.error("Erreur chargement tuile", key, e);
-        activeTiles.delete(key);
+        // En cas d'erreur (ex: 404 océan), on marque comme failed au lieu de supprimer
+        // Cela évite que le système ne retente de télécharger cette zone morte 60 fois par seconde.
+        if (activeTiles.get(key) === tileObj) {
+            tileObj.status = 'failed';
+        }
     }
 }
 
