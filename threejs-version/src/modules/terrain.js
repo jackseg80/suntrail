@@ -86,8 +86,7 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
-        // On laisse Three.js gérer la texture normalement pour un Plane (qui est inversée par défaut en WebGL)
-        // colorTex.flipY est true par défaut.
+        colorTex.flipY = false; // Désactive la magie incertaine de WebGL
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
@@ -104,7 +103,14 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         const heightScale = 1 / Math.cos(lat * Math.PI / 180);
 
         const vertices = geometry.attributes.position.array;
-        const uvs = geometry.attributes.uv.array; // Le secret absolu : utiliser les UVs natifs !
+        const uvs = geometry.attributes.uv.array;
+        
+        // Inversion absolue de l'axe V de la géométrie.
+        // Par défaut, le Nord (-Z) avait V=1. Maintenant le Nord aura V=0.
+        // Cela correspond parfaitement à l'image (0 = Haut/Nord) et annule les bugs de ImageBitmap.
+        for (let i = 1; i < uvs.length; i += 2) {
+            uvs[i] = 1.0 - uvs[i];
+        }
         
         function getElevationBilinear(px, py) {
             if (px < 0) px = 0; if (px >= 255) px = 254.999;
@@ -136,13 +142,11 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
             const u = uvs[i * 2];
             const v = uvs[i * 2 + 1];
             
-            // Dans Three.js, la texture est flipY=true par défaut. 
-            // v=1 correspond au HAUT de l'image collée sur le sol (Nord).
-            // v=0 correspond au BAS de l'image (Sud).
-            // Dans notre buffer de pixels (getImageData), Y=0 est le HAUT (Nord).
-            // On doit donc inverser V pour lire la bonne ligne d'altitude !
+            // Puisque V=0 est maintenant le Nord de la géométrie,
+            // et que le canvas d'élévation a Y=0 au Nord,
+            // il n'y a plus AUCUNE inversion à faire !
             const canvasX = u * 255;
-            const canvasY = (1.0 - v) * 255; 
+            const canvasY = v * 255; 
             
             const h = getElevationBilinear(canvasX, canvasY);
             vertices[i * 3 + 1] = (h > -9000 ? h : minH) * heightScale;
