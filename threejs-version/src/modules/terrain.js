@@ -104,20 +104,19 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
         const heightScale = 1 / Math.cos(lat * Math.PI / 180);
 
         const vertices = geometry.attributes.position.array;
+        const uvs = geometry.attributes.uv.array; // Le secret absolu : utiliser les UVs natifs !
         
-        function getElevationBilinear(u, v) {
-            let x = u * 255;
-            let y = v * 255;
-            if (x < 0) x = 0; if (x >= 255) x = 254.999;
-            if (y < 0) y = 0; if (y >= 255) y = 254.999;
+        function getElevationBilinear(px, py) {
+            if (px < 0) px = 0; if (px >= 255) px = 254.999;
+            if (py < 0) py = 0; if (py >= 255) py = 254.999;
 
-            const x0 = Math.floor(x);
-            const y0 = Math.floor(y);
+            const x0 = Math.floor(px);
+            const y0 = Math.floor(py);
             const x1 = x0 + 1;
             const y1 = y0 + 1;
 
-            const wx = x - x0;
-            const wy = y - y0;
+            const wx = px - x0;
+            const wy = py - y0;
 
             const h00 = heights[y0 * 256 + x0];
             const h10 = heights[y0 * 256 + x1];
@@ -132,20 +131,21 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
                    h11 * wx * wy;
         }
 
-        for (let i = 0; i < vertices.length; i += 3) {
-            // Un PlaneGeometry va de x = -width/2 (Ouest) à +width/2 (Est)
-            const u = (vertices[i] / overlapSize) + 0.5;
+        // On parcourt chaque sommet du maillage
+        for (let i = 0; i < vertices.length / 3; i++) {
+            const u = uvs[i * 2];
+            const v = uvs[i * 2 + 1];
             
-            // Après rotateX(-PI/2), le haut du plan original (Y positif) pointe vers Z NÉGATIF (Nord).
-            // Le bas du plan (Y négatif) pointe vers Z POSITIF (Sud).
-            // L'image de la heightmap va de Y=0 (Nord) à Y=256 (Sud).
-            // Donc quand Z est négatif (Nord), on veut lire Y=0.
-            // Donc v = (Z / size) + 0.5 -> Z=-size/2 donne v=0 (Haut de l'image).
-            // C'est exactement le comportement naturel de la Heightmap !
-            const v = (vertices[i+2] / overlapSize) + 0.5; 
+            // Dans Three.js, la texture est flipY=true par défaut. 
+            // v=1 correspond au HAUT de l'image collée sur le sol (Nord).
+            // v=0 correspond au BAS de l'image (Sud).
+            // Dans notre buffer de pixels (getImageData), Y=0 est le HAUT (Nord).
+            // On doit donc inverser V pour lire la bonne ligne d'altitude !
+            const canvasX = u * 255;
+            const canvasY = (1.0 - v) * 255; 
             
-            const h = getElevationBilinear(u, v);
-            vertices[i+1] = (h > -9000 ? h : minH) * heightScale;
+            const h = getElevationBilinear(canvasX, canvasY);
+            vertices[i * 3 + 1] = (h > -9000 ? h : minH) * heightScale;
         }
         
         // Lissage des ombres
