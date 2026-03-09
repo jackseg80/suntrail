@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { updateSunPosition } from './sun.js';
 import { initScene } from './scene.js';
-import { loadTerrain } from './terrain.js';
+import { loadTerrain, updateVisibleTiles, activeTiles } from './terrain.js';
 
 export function initUI() {
     const s1 = localStorage.getItem('maptiler_key_3d');
@@ -42,7 +42,6 @@ function initGeocoding() {
         
         geoTimer = setTimeout(async () => {
             try {
-                // Utilisation de l'API Geocoding de MapTiler
                 const r = await fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(q)}.json?key=${state.MK}&language=fr&limit=6`);
                 if (!r.ok) return;
                 const data = await r.json();
@@ -60,13 +59,30 @@ function initGeocoding() {
                         geoResults.style.display = 'none';
                         geoInput.value = name;
                         
-                        // Action : Changer de position et recharger le monde
+                        // 1. Mise à jour des coordonnées globales
                         state.TARGET_LAT = lat;
                         state.TARGET_LON = lng;
                         
-                        // On réinitialise la position de la caméra au-dessus du nouveau lieu
-                        // Note : Dans un Tile Manager, le point (0,0,0) est toujours le centre du chargement initial
-                        // Pour une navigation fluide, on va simplement forcer le rechargement des tuiles
+                        // 2. Réinitialisation de la caméra et du point d'origine du monde
+                        if (state.controls) {
+                            state.initialLat = lat;
+                            state.initialLon = lng;
+                            state.controls.target.set(0, 0, 0);
+                            state.camera.position.set(0, 3000, 8000);
+                        }
+                        
+                        // 3. Destruction absolue de toutes les anciennes montagnes (tuiles)
+                        for (const [key, mesh] of activeTiles.entries()) {
+                            if (mesh) {
+                                state.scene.remove(mesh);
+                                mesh.geometry.dispose();
+                                mesh.material.map.dispose();
+                                mesh.material.dispose();
+                            }
+                        }
+                        activeTiles.clear();
+                        
+                        // 4. Reconstruction du nouveau monde et du soleil
                         await updateVisibleTiles();
                         updateSunPosition(document.getElementById('time-slider').value);
                     });

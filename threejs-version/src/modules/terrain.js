@@ -3,7 +3,7 @@ import { state } from './state.js';
 
 const EARTH_CIRCUMFERENCE = 40075016.68;
 const RESOLUTION = 128; // 128x128 segments par tuile
-const activeTiles = new Map(); 
+export const activeTiles = new Map(); 
 
 export function lngLatToTile(lon, lat, zoom) {
     const x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
@@ -86,25 +86,24 @@ async function loadSingleTile(tx, ty, zoom, originTile, key) {
 
         const colorTex = new THREE.CanvasTexture(imgColor);
         colorTex.colorSpace = THREE.SRGBColorSpace;
+        colorTex.flipY = false; // CORRECTION 1: Remet les textes à l'endroit et aligne la texture avec la 3D !
         if (state.renderer) colorTex.anisotropy = state.renderer.capabilities.getMaxAnisotropy();
 
-        // Calcul exact de la taille de la tuile en projection Web Mercator
         const tileSizeMeters = EARTH_CIRCUMFERENCE / Math.pow(2, zoom);
         
-        // Position relative par rapport à la tuile d'origine (Garantit 0 espaces/vides)
         const dx = (tx - originTile.x) * tileSizeMeters;
         const dz = (ty - originTile.y) * tileSizeMeters;
 
-        const geometry = new THREE.PlaneGeometry(tileSizeMeters, tileSizeMeters, RESOLUTION, RESOLUTION);
+        // CORRECTION 2: On agrandit la géométrie de 1% pour forcer le chevauchement et boucher les "vides" (Seams)
+        const overlapSize = tileSizeMeters * 1.01;
+        const geometry = new THREE.PlaneGeometry(overlapSize, overlapSize, RESOLUTION, RESOLUTION);
         geometry.rotateX(-Math.PI / 2);
 
-        // Facteur de correction de l'étirement Mercator pour l'altitude
         const lat = tileToLat(ty + 0.5, zoom);
         const heightScale = 1 / Math.cos(lat * Math.PI / 180);
 
         const vertices = geometry.attributes.position.array;
         
-        // Fonction de lissage bilinéaire pour des pentes parfaites
         function getElevationBilinear(u, v) {
             let x = u * 255;
             let y = v * 255;

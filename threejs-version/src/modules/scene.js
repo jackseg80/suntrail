@@ -31,22 +31,19 @@ export async function initScene() {
     state.controls.maxPolarAngle = Math.PI / 2 - 0.05;
 
     // Constantes pour la conversion Mètres <-> Degrés
-    const EARTH_CIRCUMFERENCE = 40075016.68;
-    const initialLat = state.TARGET_LAT;
-    const initialLon = state.TARGET_LON;
+    state.initialLat = state.TARGET_LAT;
+    state.initialLon = state.TARGET_LON;
 
     // Mise à jour des tuiles lors du mouvement panoramique
     const throttledUpdate = throttle(() => {
-        // Calcul de la nouvelle position GPS basée sur le déplacement en X et Z du point de pivot (target)
         const dx = state.controls.target.x;
         const dz = state.controls.target.z;
 
-        // Conversion Mercator Inverse (approximative sur de courtes distances pour la fluidité)
-        const dLon = (dx / (111320 * Math.cos(initialLat * Math.PI / 180)));
-        const dLat = -(dz / 111320); // Z positif = Sud, donc on inverse pour la Latitude
+        const dLon = (dx / (111320 * Math.cos(state.initialLat * Math.PI / 180)));
+        const dLat = -(dz / 111320); 
 
-        state.TARGET_LON = initialLon + dLon;
-        state.TARGET_LAT = initialLat + dLat;
+        state.TARGET_LON = state.initialLon + dLon;
+        state.TARGET_LAT = state.initialLat + dLat;
 
         updateVisibleTiles();
     }, 500);
