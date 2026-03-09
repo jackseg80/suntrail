@@ -3,7 +3,8 @@ struct Params {
     sunAzDeg: f32, 
     sunAltDeg: f32, 
     maxSteps: u32, 
-    gridWidthLon: f32,
+    baseMpcX: f32,
+    baseMpcY: f32,
     gridNorthMercY: f32,
     gridSouthMercY: f32,
 }
@@ -58,22 +59,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let baseElev = elevGrid[idx];
         if (baseElev < -9000.0) { continue; }
         
-        // Exact physical distance of 1 pixel at this Web Mercator Y coordinate
+        // Exact physical distances taking aspect ratio into account
         let mercY = params.gridNorthMercY - (f32(y) / f32(gs)) * (params.gridNorthMercY - params.gridSouthMercY);
         let latRad = 2.0 * atan(exp(mercY)) - 1.57079632679;
-        let mpc = (params.gridWidthLon * 111320.0 * cos(latRad)) / f32(gs);
+        let cosLat = cos(latRad);
         
-        // Web Mercator is conformal : Grid angles = Physical angles
-        let rawDx = sin(sunAzRad);
-        let rawDy = -cos(sunAzRad);
+        let mpcX = params.baseMpcX * cosLat;
+        let mpcY = params.baseMpcY * cosLat;
+        
+        let rawDx = sin(sunAzRad) / mpcX;
+        let rawDy = -cos(sunAzRad) / mpcY;
         let mc = max(abs(rawDx), abs(rawDy));
         let dx = rawDx / mc;
         let dy = rawDy / mc;
-        let stepDist = sqrt(dx * dx + dy * dy) * mpc;
+        let stepDist = sqrt((dx * mpcX) * (dx * mpcX) + (dy * mpcY) * (dy * mpcY));
         
         var maxHA: f32 = -1.5708;
         let sunTop = sunAltRad + sunRadius;
         
+        // 1. Ray-Marching (Ombres portées lointaines)
         for (var s: u32 = 1u; s <= params.maxSteps; s = s + 1u) {
             let sf = f32(s);
             let fx = f32(x) + dx * sf;
@@ -96,6 +100,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             val = (maxHA - sunBot) / (sunTop - sunBot); 
         }
         
+        // 2. Self-Shadowing (Ombrage propre des pentes opposées)
         var bestSelf: f32 = 0.0;
         for (var i: u32 = 0u; i < 3u; i = i + 1u) {
             let r = radii[i];
@@ -108,10 +113,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             
             if (eL < -9000.0 || eR < -9000.0 || eU < -9000.0 || eD < -9000.0) { continue; }
             
-            let dzdx = (eR - eL) / (f32(r) * 2.0 * mpc);
-            let dzdy = (eD - eU) / (f32(r) * 2.0 * mpc);
+            let dzdx = (eR - eL) / (f32(r) * 2.0 * mpcX);
+            let dzdy = (eD - eU) / (f32(r) * 2.0 * mpcY);
             let slopeMag = sqrt(dzdx * dzdx + dzdy * dzdy);
-            if (slopeMag < 0.12) { continue; }
+            
+            // On traite toutes les pentes supérieures à 1 degré
+            if (slopeMag < 0.02) { continue; }
             
             let nx = -dzdx;
             let ny = -dzdy;
@@ -119,11 +126,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let nLen = sqrt(nx * nx + ny * ny + nz * nz);
             let cosA = (nx * sdx + ny * sdy + nz * sdz) / nLen;
             
-            var sh: f32 = 0.0;
-            if (cosA <= 0.0) { sh = 1.0; }
-            else if (cosA >= 0.35) { sh = 0.0; }
-            else if (cosA <= 0.15) { sh = 1.0; }
-            else { sh = (0.35 - cosA) / 0.20; }
+            // Modèle de décrochage de lumière (Soft Terminator)
+            var sh: f32 = clamp(0.5 - (cosA / 0.05), 0.0, 1.0);
             
             if (sh > bestSelf) { bestSelf = sh; }
             if (bestSelf >= 1.0) { break; }
