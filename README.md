@@ -11,6 +11,14 @@ SunTrail est une application web interactive de visualisation 3D avancée permet
 - **Sentiers de Randonnée** : Visualisation des sentiers **OpenStreetMap** (via Overpass API) avec code couleur selon la difficulté (SAC-Scale).
 - **Architecture Modulaire** : Projet structuré avec **Vite.js** pour une maintenance facile et une portabilité maximale (Web, Mobile, Desktop).
 
+## ⚡ Moteur WebGPU Avancé (WGSL)
+
+Le moteur de calcul d'ombres de SunTrail a été conçu sur mesure pour offrir des performances maximales et une précision topographique absolue :
+
+- **Self-Shadowing Intégral** : Le calcul de l'ombrage propre des montagnes (produit scalaire entre la normale de la pente et la direction du soleil) est exécuté nativement dans le *Compute Shader*. Cela permet un rendu immédiat et évite tout blocage (micro-freeze) du thread principal JavaScript.
+- **Correction Dynamique Mercator** : La déformation inhérente à la projection cartographique Web Mercator est corrigée en temps réel. Le shader recalcule la taille physique exacte (en mètres) de chaque pixel en fonction de sa ligne de latitude, garantissant des angles d'ombres parfaits, même lors d'un dézoom massif sur plusieurs centaines de kilomètres.
+- **Compression Mémoire (Bit Packing)** : La bande passante entre la carte graphique (GPU) et le processeur (CPU) est optimisée à l'extrême. Chaque thread GPU traite 4 pixels simultanément et compresse leurs valeurs d'ombre (8-bit) dans un unique entier de 32 bits (`u32`). Cela divise par 4 le temps de transfert des données et permet au CPU de lire le résultat instantanément sans aucun traitement post-réception.
+
 ## 🛠️ Installation et Lancement
 
 ### Prérequis
